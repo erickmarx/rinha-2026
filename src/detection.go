@@ -5,6 +5,11 @@ type Detected struct {
 	Label    string
 }
 
+type FraudScore struct {
+	Approved   bool    `json:"approved"`
+	FraudScore float32 `json:"fraud_score"`
+}
+
 func labelString(code uint32) string {
 	if code == 1 {
 		return "legit"
@@ -12,26 +17,54 @@ func labelString(code uint32) string {
 	return "fraud"
 }
 
-func Detect(input Vector) []Detected {
-	// Para simplificar o estudo, vamos focar em encontrar o Top 1 mais similar
-	var bestDist float64 = 3.4e38 // Infinito (Max Float32)
-	var bestLabel uint32
+func Detect(input Vector) FraudScore {
+	var top []Detected
 
 	for i := range len(dataset) {
-		reg := &dataset[i] // Ponteiro para evitar cópia da struct no loop
+		reg := &dataset[i]
 		var sum float64
 
-		// Cálculo da Euclidiana Quadrática
 		for j := range 14 {
 			diff := input[j] - float64(reg.Vector[j])
 			sum += diff * diff
 		}
 
-		if sum < bestDist {
-			bestDist = sum
-			bestLabel = reg.Label
+		// Encontra a posição de inserção (ordem crescente de distância)
+		pos := len(top)
+
+		for j := range top {
+			if sum < top[j].Distance {
+				pos = j
+				break
+			}
+		}
+
+		// Se cabe no top 5, insere ordenado
+		if pos < 5 {
+			top = append(top, Detected{})
+			copy(top[pos+1:], top[pos:])
+			top[pos] = Detected{
+				Distance: sum,
+				Label:    labelString(reg.Label),
+			}
+			if len(top) > 5 {
+				top = top[:5]
+			}
 		}
 	}
 
-	return []Detected{{Distance: bestDist, Label: labelString(bestLabel)}}
+	count := 0
+
+	for _, score := range top {
+		if score.Label == "fraud" {
+			count++
+		}
+	}
+
+	ratio := float32(count) / 5.0
+
+	return FraudScore{
+		Approved:   ratio < float32(0.6),
+		FraudScore: ratio,
+	}
 }
