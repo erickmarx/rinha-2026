@@ -39,6 +39,9 @@ func main() {
 		backends = append(backends, u)
 	}
 
+	// Log de startup: mostra quantos backends foram carregados e quais são.
+	log.Printf("[LB] Iniciado com %d backend(s): %v", len(backends), raw)
+
 	// httputil.ReverseProxy é o coração do load balancer.
 	// Ele recebe a requisição do cliente, encaminha para o backend escolhido
 	// e devolve a resposta do backend de volta ao cliente, sem modificar nada.
@@ -56,12 +59,25 @@ func main() {
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
 			req.Host = target.Host
+
+			// LOG: mostra qual requisição está sendo encaminhada e para qual backend.
+			// NÃO logamos headers nem body para respeitar a regra de nao inspecionar payload.
+			log.Printf("[LB] => %s %s -> %s", req.Method, req.URL.Path, target.Host)
 		},
-		// ModifyResponse e ErrorHandler ficam nil de propósito:
-		// não queremos interceptar, transformar ou tomar decisões sobre a resposta.
-		// O proxy repassa exatamente o que o backend respondeu.
-		ModifyResponse: nil,
-		ErrorHandler:   nil,
+
+		// ModifyResponse é chamado APÓS o backend responder, antes de devolver ao cliente.
+		// Usamos apenas para LOGAR o status code da resposta. Não modificamos nada.
+		ModifyResponse: func(resp *http.Response) error {
+			log.Printf("[LB] <= %d %s <- %s", resp.StatusCode, resp.Request.URL.Path, resp.Request.Host)
+			return nil
+		},
+
+		// ErrorHandler é chamado se o backend estiver inacessível (connection refused, timeout, etc.).
+		// Logamos o erro para facilitar o diagnostico, mas nao alteramos a resposta ao cliente.
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			log.Printf("[LB] !! ERRO ao encaminhar %s %s -> %s: %v", r.Method, r.URL.Path, r.Host, err)
+			// Deixamos o ReverseProxy padrao escrever a resposta de erro no ResponseWriter.
+		},
 	}
 
 	fmt.Println("LB listening on :8080")
