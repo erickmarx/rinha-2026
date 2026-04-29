@@ -13,7 +13,7 @@
 # - Cada API: 128 MB (dataset mmap 58MB + heap do Go + overhead)
 # - LB: 32 MB (binario pequeno em scratch, quase nada de memoria)
 # - Total: ~288 MB, sobrando ~62 MB para o kernel Docker.
-
+#
 services:
   api1:
     image: sua-org/sua-api:latest
@@ -24,11 +24,10 @@ services:
       - PORT=8080
     ports:
       - "8081:8080"
+    restart: unless-stopped
     deploy:
       resources:
         limits:
-          # 0.4 de 1 CPU. A API eh CPU-bound devido ao KNN scan linear.
-          # Com menos que isso, o k6 vai ver timeouts.
           cpus: "0.4"
           memory: 128M
     networks:
@@ -43,6 +42,7 @@ services:
       - PORT=8080
     ports:
       - "8082:8080"
+    restart: unless-stopped
     deploy:
       resources:
         limits:
@@ -58,19 +58,16 @@ services:
       dockerfile: Dockerfile
     environment:
       - BACKENDS=http://api1:8080,http://api2:8080
-      # Em producao com 1 CPU, desligue os logs para maximizar throughput.
-      # O log.Printf usa mutex global e syscall write a cada requisicao.
       - LB_LOG=false
     ports:
       - "9999:8080"
+    restart: unless-stopped
     depends_on:
       - api1
       - api2
     deploy:
       resources:
         limits:
-          # 0.2 de 1 CPU. O LB eh leve (so repassa bytes), mas precisa de
-          # ciclos suficientes para manter conexoes keep-alive abertas.
           cpus: "0.2"
           memory: 32M
     networks:
