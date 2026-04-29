@@ -1,19 +1,19 @@
 # Docker Compose orquestra os containers da aplicacao.
 #
 # HARDWARE ALVO: 1 CPU e 350 MB de memoria TOTAIS.
-# Isso significa que api1 + api2 + lb dividem 1 unico core e 350MB.
-# Os limites abaixo foram calibrados para nao estourar esses recursos.
+# Com K-Means, cada API processa ~1000 registros por requisicao (era 1M).
+# Isso permite 3 APIs com recursos menores, aumentando throughput e redundancia.
 #
-# Estrategia de divisao de CPU:
-# - Cada API recebe 0.4 CPU (juntas usam 0.8)
-# - O LB recebe 0.2 CPU (0.2)
+# Divisao de CPU:
+# - 3 APIs: 0.30 CPU cada (juntas usam 0.9)
+# - LB: 0.10 CPU
 # - Total: 1.0 CPU
 #
-# Estrategia de divisao de memoria:
-# - Cada API: 128 MB (dataset mmap 58MB + heap do Go + overhead)
-# - LB: 32 MB (binario pequeno em scratch, quase nada de memoria)
-# - Total: ~288 MB, sobrando ~62 MB para o kernel Docker.
-#
+# Divisao de memoria:
+# - 3 APIs: 100M cada (dataset mmap 60M + overhead)
+# - LB: 32M
+# - Total: 332M, sobrando ~18M para o kernel Docker.
+
 services:
   api1:
     image: sua-org/sua-api:latest
@@ -28,8 +28,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.4"
-          memory: 128M
+          cpus: "0.30"
+          memory: 100M
     networks:
       - rinha-net
 
@@ -46,8 +46,26 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.4"
-          memory: 128M
+          cpus: "0.30"
+          memory: 100M
+    networks:
+      - rinha-net
+
+  api3:
+    image: sua-org/sua-api:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - PORT=8080
+    ports:
+      - "8083:8080"
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.30"
+          memory: 100M
     networks:
       - rinha-net
 
@@ -57,7 +75,7 @@ services:
       context: ./lb
       dockerfile: Dockerfile
     environment:
-      - BACKENDS=http://api1:8080,http://api2:8080
+      - BACKENDS=http://api1:8080,http://api2:8080,http://api3:8080
       - LB_LOG=false
     ports:
       - "9999:8080"
@@ -65,10 +83,11 @@ services:
     depends_on:
       - api1
       - api2
+      - api3
     deploy:
       resources:
         limits:
-          cpus: "0.2"
+          cpus: "0.10"
           memory: 32M
     networks:
       - rinha-net
