@@ -42,7 +42,9 @@ func NewKMeans(points []Point, k int) *KMeans {
 		K:           k,
 	}
 
-	rand.Seed(time.Now().UnixNano())
+	// Semente fixa para geracao deterministica: toda execucao gera
+	// os mesmos clusters, garantindo reprodutibilidade entre builds.
+	rand.Seed(42)
 	for i := 0; i < k; i++ {
 		idx := rand.Intn(len(points))
 		for j := 0; j < 14; j++ {
@@ -183,8 +185,10 @@ func bin() {
 	}
 	fmt.Printf("Convertidos %d registros para formato interno\n", len(points))
 
-	// 2. Executa K-Means com k=1000 clusters.
-	const k = 1000
+	// 2. Executa K-Means com k=5000 clusters.
+	// Clusters menores (~10 registros cada) reduzem a chance de misturar
+	// fraudes e legitimos no mesmo grupo, melhorando a precisao do KNN.
+	const k = 5000
 	fmt.Printf("Iniciando K-Means com k=%d...\n", k)
 	start := time.Now()
 
