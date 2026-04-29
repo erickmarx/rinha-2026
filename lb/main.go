@@ -10,75 +10,60 @@ import (
 	"sync/atomic"
 )
 
-var backends []*url.URL
+// lbLogEnabled controla se o LB imprime logs.
+// Em producao, mantenha false. Em desenvolvimento, true para debugar.
+// Como eh constante, o compilador Go elimina o codigo morto quando false.
+const lbLogEnabled = false
 
+func lbLog(format string, v ...interface{}) {
+	if lbLogEnabled {
+		log.Printf("[LB] "+format, v...)
+	}
+}
+
+var backends []*url.URL
 var idx atomic.Uint64
 
 func main() {
 	raw := os.Getenv("BACKENDS")
 	if raw == "" {
-	raw = "http://api1:8080,http://api2:8080"
+		raw = "http://api1:8080,http://api2:8080"
 	}
 
 	for _, s := range strings.Split(raw, ",") {
 		u, err := url.Parse(s)
 		if err != nil {
-			log.Fatal(err)
+			panic(err)
 		}
 		backends = append(backends, u)
 	}
 
-	// LB_LOG habilita/desabilita logs de requisicao.
-	// Em producao com 1 CPU, logs consomem ciclos preciosos (mutex do logger,
-	// formatacao de strings, syscall de escrita). Desligar aumenta throughput.
-	logsEnabled := true
-	log.Printf("[LB] Iniciado com %d backend(s): %v | logs=%v", len(backends), raw, logsEnabled)
+	lbLog("Iniciado com %d backend(s): %v", len(backends), raw)
 
-	// =========================================================================
-	// TRANSPORT
-	// =========================================================================
-	// DisableKeepAlives: true = cada requisicao abre uma nova conexao TCP.
-	// Isso elimina o problema de desalinhamento de body em conexoes reutilizadas
-	// (keep-alive), que causa "unexpected EOF" no JSON decoder da API em alta
-	// carga. O overhead de TCP handshake eh aceitavel para JSON pequeno.
+	// Transport com keep-alive reabilitado. Sem keep-alive, cada requisicao
+	// abre uma nova conexao TCP (handshake + FIN), o que mata a CPU do LB
+	// em alta carga. Com keep-alive, conexoes sao reutilizadas.
 	transport := &http.Transport{
-		DisableKeepAlives: true,
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 100,
+		DisableCompression:  true,
 	}
 
 	proxy := httputil.ReverseProxy{
 		Transport: transport,
-
 		Director: func(req *http.Request) {
-			// Round robin atômico.
 			i := int(idx.Add(1)-1) % len(backends)
 			target := backends[i]
-
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
 			req.Host = target.Host
-
-			// Log de requisicoes bem-sucedidas removido para reduzir ruido.
-			// Em caso de erro, o ErrorHandler loga automaticamente.
 		},
-
-		ModifyResponse: func(resp *http.Response) error {
-			// Só loga se a resposta do backend for um erro (4xx/5xx).
-			if resp.StatusCode >= 400 {
-				log.Printf("[LB] WARN backend respondeu %d %s <- %s",
-					resp.StatusCode, resp.Request.URL.Path, resp.Request.Host)
-			}
-			return nil
-		},
-
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			if logsEnabled {
-				log.Printf("[LB] !! ERRO ao encaminhar %s %s -> %s: %v", r.Method, r.URL.Path, r.Host, err)
-			}
-			// Devolve 502 imediatamente para o cliente nao ficar pendurado.
+			lbLog("ERRO ao encaminhar %s %s -> %s: %v", r.Method, r.URL.Path, r.Host, err)
 			http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		},
 	}
 
-	log.Println("LB listening on :8080")
-	log.Fatal(http.ListenAndServe(":8080", &proxy))
+	lbLog("Escutando na porta 8080")
+	http.ListenAndServe(":8080", &proxy)
 }
