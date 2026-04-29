@@ -1,41 +1,40 @@
-# Docker Compose orquestra os containers da aplicação.
-# Aqui temos 2 instâncias da API e 1 load balancer que distribui as requisições entre elas.
+# Docker Compose orquestra os containers da aplicacao.
 #
-# CADA SERVIÇO TEM "build" + "image" simultaneamente:
-# - Se a imagem JA EXISTIR localmente ou no registry, o Docker usa ela diretamente.
-# - Se a imagem NAO EXISTIR, o Docker builda automaticamente usando o Dockerfile
-#   e taga o resultado com o nome definido em "image".
-# Isso permite usar o mesmo compose tanto no desenvolvimento (build local)
-# quanto em producao (imagens pre-buildadas).
+# HARDWARE ALVO: 1 CPU e 350 MB de memoria TOTAIS.
+# Isso significa que api1 + api2 + lb dividem 1 unico core e 350MB.
+# Os limites abaixo foram calibrados para nao estourar esses recursos.
+#
+# Estrategia de divisao de CPU:
+# - Cada API recebe 0.4 CPU (juntas usam 0.8)
+# - O LB recebe 0.2 CPU (0.2)
+# - Total: 1.0 CPU
+#
+# Estrategia de divisao de memoria:
+# - Cada API: 128 MB (dataset mmap 58MB + heap do Go + overhead)
+# - LB: 32 MB (binario pequeno em scratch, quase nada de memoria)
+# - Total: ~288 MB, sobrando ~62 MB para o kernel Docker.
 
 services:
   api1:
-    # Nome da imagem que sera usada (ou gerada, caso precise buildar).
     image: sua-org/sua-api:latest
-    # Caminho do Dockerfile para build local, caso a imagem acima nao exista.
     build:
       context: .
       dockerfile: Dockerfile
     environment:
-      # A API pode ler a porta da env, mas aqui usamos o padrao 8080.
       - PORT=8080
     ports:
-      # Porta exposta no host para acesso direto a api1 (debug/tests).
-      # O LB ainda consegue falar com ela pela rede interna rinha-net na porta 8080.
       - "8081:8080"
     deploy:
       resources:
         limits:
-          # Limite de memoria para a API. Como usamos scratch + binario estatico,
-          # o consumo real e bem menor. Esse limite garante que nao haja surpresas.
+          # 0.4 de 1 CPU. A API eh CPU-bound devido ao KNN scan linear.
+          # Com menos que isso, o k6 vai ver timeouts.
+          cpus: "0.4"
           memory: 128M
     networks:
-      # Conecta o servico a rede bridge customizada definida no final do arquivo.
-      # Isso isola o trafego interno e garante resolucao de DNS entre os containers.
       - rinha-net
 
   api2:
-    # api2 e identica a api1. O load balancer ve ambas como backends iguais.
     image: sua-org/sua-api:latest
     build:
       context: .
@@ -43,47 +42,40 @@ services:
     environment:
       - PORT=8080
     ports:
-      # Porta exposta no host para acesso direto a api2 (debug/tests).
       - "8082:8080"
     deploy:
       resources:
         limits:
+          cpus: "0.4"
           memory: 128M
     networks:
       - rinha-net
 
   lb:
-    # Imagem do load balancer, tambem ja buildada e publicada.
     image: sua-org/seu-lb:latest
     build:
       context: ./lb
       dockerfile: Dockerfile
     environment:
-      # BACKENDS informa ao LB para onde encaminhar as requisicoes.
-      # O LB usa essa string para construir a lista de backends no startup.
       - BACKENDS=http://api1:8080,http://api2:8080
+      # Em producao com 1 CPU, desligue os logs para maximizar throughput.
+      # O log.Printf usa mutex global e syscall write a cada requisicao.
+      - LB_LOG=false
     ports:
-      # Publica a porta 9999 do host para a porta 8080 do container do LB.
-      # O cliente externo bate em http://localhost:9999 e o LB distribui para as APIs.
       - "9999:8080"
     depends_on:
-      # Garante que o Docker inicie api1 e api2 antes do LB.
-      # ATENCAO: isso NAO garante que as APIs ja estejam "prontas" (listening);
-      # apenas garante a ordem de criacao dos containers.
       - api1
       - api2
     deploy:
       resources:
         limits:
-          # O LB e um simples reverse proxy; consome muito pouca memoria.
+          # 0.2 de 1 CPU. O LB eh leve (so repassa bytes), mas precisa de
+          # ciclos suficientes para manter conexoes keep-alive abertas.
+          cpus: "0.2"
           memory: 32M
     networks:
       - rinha-net
 
-# Rede bridge customizada.
-# O driver "bridge" cria uma rede privada no host onde os containers podem se comunicar.
-# Cada container recebe um IP interno e pode ser resolvido pelo nome do servico (ex: "api1", "api2").
-# Isso isola estes containers de outras redes Docker e de redes externas.
 networks:
   rinha-net:
     driver: bridge

@@ -1,36 +1,44 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"time"
 )
 
-// backends armazena a lista de URLs das APIs para onde o LB vai distribuir as requisições.
-// O tipo *url.URL já vem parseado (scheme, host, path, etc.).
+// backends armazena a lista de URLs das APIs para onde o LB vai distribuir as requisicoes.
 var backends []*url.URL
 
-// idx é um contador atômico usado pelo round robin.
-// Usamos atomic.Uint64 para evitar race conditions quando múltiplas goroutines
-// (uma por requisição HTTP) incrementam o contador ao mesmo tempo.
+// idx eh um contador atômico usado pelo round robin.
 var idx atomic.Uint64
 
+// bytePool implementa a interface httputil.BufferPool.
+// httputil.ReverseProxy exige Get() []byte e Put([]byte), mas sync.Pool
+// trabalha com interface{} (any). Esse wrapper faz a conversao de tipos.
+type bytePool struct {
+	pool *sync.Pool
+}
+
+func (p *bytePool) Get() []byte {
+	return p.pool.Get().([]byte)
+}
+
+func (p *bytePool) Put(b []byte) {
+	p.pool.Put(b)
+}
+
 func main() {
-	// BACKENDS vem da variável de ambiente, definida no docker-compose.
-	// Formato esperado: "http://api1:8080,http://api2:8080"
-	// O valor padrão serve para testes locais fora do Docker.
 	raw := os.Getenv("BACKENDS")
 	if raw == "" {
-		raw = "http://api1:8080,http://api2:8080"
+	raw = "http://api1:8080,http://api2:8080"
 	}
 
-	// Quebra a string em várias URLs usando vírgula como delimitador.
-	// Cada URL válida é convertida para *url.URL e adicionada ao slice backends.
 	for _, s := range strings.Split(raw, ",") {
 		u, err := url.Parse(s)
 		if err != nil {
@@ -39,50 +47,82 @@ func main() {
 		backends = append(backends, u)
 	}
 
-	// Log de startup: mostra quantos backends foram carregados e quais são.
-	log.Printf("[LB] Iniciado com %d backend(s): %v", len(backends), raw)
+	// LB_LOG habilita/desabilita logs de requisicao.
+	// Em producao com 1 CPU, logs consomem ciclos preciosos (mutex do logger,
+	// formatacao de strings, syscall de escrita). Desligar aumenta throughput.
+	logsEnabled := os.Getenv("LB_LOG") != "false"
+	log.Printf("[LB] Iniciado com %d backend(s): %v | logs=%v", len(backends), raw, logsEnabled)
 
-	// httputil.ReverseProxy é o coração do load balancer.
-	// Ele recebe a requisição do cliente, encaminha para o backend escolhido
-	// e devolve a resposta do backend de volta ao cliente, sem modificar nada.
+	// =========================================================================
+	// TRANSPORT CUSTOMIZADO
+	// =========================================================================
+	// O ReverseProxy usa http.DefaultTransport por padrao. O problema:
+	// - MaxIdleConnsPerHost PADRAO eh 2. Isso significa que entre o LB e CADA API
+	//   so existem 2 conexoes TCP reutilizaveis. Se o k6 enviar 50 reqs paralelas,
+	//   o LB fica abrindo e fechando conexoes o tempo todo (TCP handshake + TLS
+	//   se houvesse). Com 1 CPU, esse overhead mata a performance.
+	// - DisableCompression: true evita que o LB gaste CPU descomprimindo respostas
+	//   gzip. Como controlamos ambos os lados, nao precisamos de compressao.
+	transport := &http.Transport{
+		MaxIdleConns:        100,          // total de conexoes idle no pool
+		MaxIdleConnsPerHost: 100,          // conexoes idle POR API (era 2!)
+		IdleConnTimeout:     90 * time.Second,
+		DisableCompression:  true,         // economiza CPU
+		DisableKeepAlives:   false,        // explicita: keep-alive ligado
+	}
+
+	// =========================================================================
+	// BUFFER POOL
+	// =========================================================================
+	// O ReverseProxy precisa de buffers temporarios para ler/escrever dados
+	// durante o proxy. Sem BufferPool, ele faz make([]byte, 32*1024) a CADA
+	// requisicao. Com alta carga isso gera pressao no garbage collector.
+	//
+	// httputil.BufferPool eh uma interface que exige Get() []byte e Put([]byte).
+	// sync.Pool sozinho nao satisfaz essa interface (ele usa Get() any).
+	// Por isso criamos um wrapper tipado.
+	bufferPool := &bytePool{
+		pool: &sync.Pool{
+			New: func() interface{} {
+				return make([]byte, 32*1024) // 32KB = tamanho padrao do ReverseProxy
+			},
+		},
+	}
+
 	proxy := httputil.ReverseProxy{
-		// Director é executado para CADA requisição antes de enviá-la ao backend.
-		// Aqui aplicamos o round robin: incrementamos o contador atômico e usamos
-		// o módulo (%) para circular entre os backends disponíveis.
+		Transport:  transport,
+		BufferPool: bufferPool,
+
 		Director: func(req *http.Request) {
-			// Add(1) retorna o valor APÓS o incremento. Subtraímos 1 para usar base 0.
+			// Round robin atômico.
 			i := int(idx.Add(1)-1) % len(backends)
 			target := backends[i]
 
-			// Apontamos a requisição para o backend escolhido.
-			// Scheme e Host da URL definem para onde o HTTP client interno vai conectar.
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
 			req.Host = target.Host
 
-			// LOG: mostra qual requisição está sendo encaminhada e para qual backend.
-			// NÃO logamos headers nem body para respeitar a regra de nao inspecionar payload.
-			log.Printf("[LB] => %s %s -> %s", req.Method, req.URL.Path, target.Host)
+			if logsEnabled {
+				log.Printf("[LB] => %s %s -> %s", req.Method, req.URL.Path, target.Host)
+			}
 		},
 
-		// ModifyResponse é chamado APÓS o backend responder, antes de devolver ao cliente.
-		// Usamos apenas para LOGAR o status code da resposta. Não modificamos nada.
 		ModifyResponse: func(resp *http.Response) error {
-			log.Printf("[LB] <= %d %s <- %s", resp.StatusCode, resp.Request.URL.Path, resp.Request.Host)
+			if logsEnabled {
+				log.Printf("[LB] <= %d %s <- %s", resp.StatusCode, resp.Request.URL.Path, resp.Request.Host)
+			}
 			return nil
 		},
 
-		// ErrorHandler é chamado se o backend estiver inacessível (connection refused, timeout, etc.).
-		// Logamos o erro para diagnostico e devolvemos 502 Bad Gateway ao cliente,
-		// para que ele nao fique pendurado esperando uma resposta que nunca chegaria.
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			log.Printf("[LB] !! ERRO ao encaminhar %s %s -> %s: %v", r.Method, r.URL.Path, r.Host, err)
+			if logsEnabled {
+				log.Printf("[LB] !! ERRO ao encaminhar %s %s -> %s: %v", r.Method, r.URL.Path, r.Host, err)
+			}
+			// Devolve 502 imediatamente para o cliente nao ficar pendurado.
 			http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		},
 	}
 
-	fmt.Println("LB listening on :8080")
-	// Inicia o servidor HTTP na porta 8080 usando nosso proxy como handler.
-	// Todas as requisições que chegam aqui são encaminhadas para as APIs.
+	log.Println("LB listening on :8080")
 	log.Fatal(http.ListenAndServe(":8080", &proxy))
 }
