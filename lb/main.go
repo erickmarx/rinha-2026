@@ -57,14 +57,15 @@ func main() {
 			req.URL.Host = target.Host
 			req.Host = target.Host
 
-			if logsEnabled {
-				log.Printf("[LB] => %s %s -> %s (len=%d)", req.Method, req.URL.Path, target.Host, req.ContentLength)
-			}
+			// Log de requisicoes bem-sucedidas removido para reduzir ruido.
+			// Em caso de erro, o ErrorHandler loga automaticamente.
 		},
 
 		ModifyResponse: func(resp *http.Response) error {
-			if logsEnabled {
-				log.Printf("[LB] <= %d %s <- %s", resp.StatusCode, resp.Request.URL.Path, resp.Request.Host)
+			// Só loga se a resposta do backend for um erro (4xx/5xx).
+			if resp.StatusCode >= 400 {
+				log.Printf("[LB] WARN backend respondeu %d %s <- %s",
+					resp.StatusCode, resp.Request.URL.Path, resp.Request.Host)
 			}
 			return nil
 		},
