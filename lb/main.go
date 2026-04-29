@@ -64,8 +64,8 @@ func main() {
 		ErrorHandler:   nil,
 	}
 
-	fmt.Println("LB listening on :9999")
-	// Inicia o servidor HTTP na porta 9999 usando nosso proxy como handler.
+	fmt.Println("LB listening on :8080")
+	// Inicia o servidor HTTP na porta 8080 usando nosso proxy como handler.
 	// Todas as requisições que chegam aqui são encaminhadas para as APIs.
-	log.Fatal(http.ListenAndServe(":9999", &proxy))
+	log.Fatal(http.ListenAndServe(":8080", &proxy))
 }

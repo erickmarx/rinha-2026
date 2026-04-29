@@ -19,10 +19,10 @@ services:
     environment:
       # A API pode ler a porta da env, mas aqui usamos o padrao 8080.
       - PORT=8080
-    expose:
-      # "expose" deixa a porta acessivel apenas dentro da rede interna do Compose.
-      # A porta 8080 do api1 NAO e publicada no host; somente o LB consegue falar com ela.
-      - "8080"
+    ports:
+      # Porta exposta no host para acesso direto a api1 (debug/tests).
+      # O LB ainda consegue falar com ela pela rede interna rinha-net na porta 8080.
+      - "8081:8080"
     deploy:
       resources:
         limits:
@@ -42,8 +42,9 @@ services:
       dockerfile: Dockerfile
     environment:
       - PORT=8080
-    expose:
-      - "8080"
+    ports:
+      # Porta exposta no host para acesso direto a api2 (debug/tests).
+      - "8082:8080"
     deploy:
       resources:
         limits:
