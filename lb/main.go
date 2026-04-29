@@ -12,10 +12,8 @@ import (
 	"time"
 )
 
-// backends armazena a lista de URLs das APIs para onde o LB vai distribuir as requisicoes.
 var backends []*url.URL
 
-// idx eh um contador atômico usado pelo round robin.
 var idx atomic.Uint64
 
 // bytePool implementa a interface httputil.BufferPool.
@@ -50,7 +48,7 @@ func main() {
 	// LB_LOG habilita/desabilita logs de requisicao.
 	// Em producao com 1 CPU, logs consomem ciclos preciosos (mutex do logger,
 	// formatacao de strings, syscall de escrita). Desligar aumenta throughput.
-	logsEnabled := os.Getenv("LB_LOG") != "false"
+	logsEnabled := true
 	log.Printf("[LB] Iniciado com %d backend(s): %v | logs=%v", len(backends), raw, logsEnabled)
 
 	// =========================================================================
@@ -83,7 +81,7 @@ func main() {
 	// Por isso criamos um wrapper tipado.
 	bufferPool := &bytePool{
 		pool: &sync.Pool{
-			New: func() interface{} {
+			New: func() any {
 				return make([]byte, 32*1024) // 32KB = tamanho padrao do ReverseProxy
 			},
 		},
