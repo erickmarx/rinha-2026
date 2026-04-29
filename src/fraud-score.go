@@ -22,7 +22,14 @@ func Fraudscore(w http.ResponseWriter, r *http.Request) {
 	var req Transaction
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		apiLog("!! ERRO decode JSON: %v", err)
+		// Se o cliente cancelou a requisicao (timeout, connection reset),
+		// o body vem incompleto e o decoder retorna EOF. Isso nao eh um
+		// erro da API — eh ruído normal em testes de carga.
+		if r.Context().Err() != nil {
+			apiLog("!! Cliente cancelou a requisicao: %v", r.Context().Err())
+		} else {
+			apiLog("!! ERRO decode JSON: %v", err)
+		}
 		http.Error(w, "JSON invalido", http.StatusBadRequest)
 		return
 	}

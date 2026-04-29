@@ -7,29 +7,12 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"sync"
 	"sync/atomic"
-	"time"
 )
 
 var backends []*url.URL
 
 var idx atomic.Uint64
-
-// bytePool implementa a interface httputil.BufferPool.
-// httputil.ReverseProxy exige Get() []byte e Put([]byte), mas sync.Pool
-// trabalha com interface{} (any). Esse wrapper faz a conversao de tipos.
-type bytePool struct {
-	pool *sync.Pool
-}
-
-func (p *bytePool) Get() []byte {
-	return p.pool.Get().([]byte)
-}
-
-func (p *bytePool) Put(b []byte) {
-	p.pool.Put(b)
-}
 
 func main() {
 	raw := os.Getenv("BACKENDS")
@@ -52,44 +35,18 @@ func main() {
 	log.Printf("[LB] Iniciado com %d backend(s): %v | logs=%v", len(backends), raw, logsEnabled)
 
 	// =========================================================================
-	// TRANSPORT CUSTOMIZADO
+	// TRANSPORT
 	// =========================================================================
-	// O ReverseProxy usa http.DefaultTransport por padrao. O problema:
-	// - MaxIdleConnsPerHost PADRAO eh 2. Isso significa que entre o LB e CADA API
-	//   so existem 2 conexoes TCP reutilizaveis. Se o k6 enviar 50 reqs paralelas,
-	//   o LB fica abrindo e fechando conexoes o tempo todo (TCP handshake + TLS
-	//   se houvesse). Com 1 CPU, esse overhead mata a performance.
-	// - DisableCompression: true evita que o LB gaste CPU descomprimindo respostas
-	//   gzip. Como controlamos ambos os lados, nao precisamos de compressao.
+	// DisableKeepAlives: true = cada requisicao abre uma nova conexao TCP.
+	// Isso elimina o problema de desalinhamento de body em conexoes reutilizadas
+	// (keep-alive), que causa "unexpected EOF" no JSON decoder da API em alta
+	// carga. O overhead de TCP handshake eh aceitavel para JSON pequeno.
 	transport := &http.Transport{
-		MaxIdleConns:        100,          // total de conexoes idle no pool
-		MaxIdleConnsPerHost: 100,          // conexoes idle POR API (era 2!)
-		IdleConnTimeout:     90 * time.Second,
-		DisableCompression:  true,         // economiza CPU
-		DisableKeepAlives:   false,        // explicita: keep-alive ligado
-	}
-
-	// =========================================================================
-	// BUFFER POOL
-	// =========================================================================
-	// O ReverseProxy precisa de buffers temporarios para ler/escrever dados
-	// durante o proxy. Sem BufferPool, ele faz make([]byte, 32*1024) a CADA
-	// requisicao. Com alta carga isso gera pressao no garbage collector.
-	//
-	// httputil.BufferPool eh uma interface que exige Get() []byte e Put([]byte).
-	// sync.Pool sozinho nao satisfaz essa interface (ele usa Get() any).
-	// Por isso criamos um wrapper tipado.
-	bufferPool := &bytePool{
-		pool: &sync.Pool{
-			New: func() any {
-				return make([]byte, 32*1024) // 32KB = tamanho padrao do ReverseProxy
-			},
-		},
+		DisableKeepAlives: true,
 	}
 
 	proxy := httputil.ReverseProxy{
-		Transport:  transport,
-		BufferPool: bufferPool,
+		Transport: transport,
 
 		Director: func(req *http.Request) {
 			// Round robin atômico.
@@ -101,7 +58,7 @@ func main() {
 			req.Host = target.Host
 
 			if logsEnabled {
-				log.Printf("[LB] => %s %s -> %s", req.Method, req.URL.Path, target.Host)
+				log.Printf("[LB] => %s %s -> %s (len=%d)", req.Method, req.URL.Path, target.Host, req.ContentLength)
 			}
 		},
 
