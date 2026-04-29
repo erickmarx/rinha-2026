@@ -1,3 +1,21 @@
+# Docker Compose orquestra os containers da aplicacao.
+#
+# HARDWARE ALVO: 1 CPU e 350 MB de memoria TOTAIS.
+#
+# Configuracao de teste: 2 APIs (minimo obrigatorio) + LB forte.
+# Usa TODA a RAM disponivel (350M) para reduzir pressao do GC do Go
+# e aumentar buffers de rede.
+#
+# Divisao de CPU:
+# - 2 APIs: 0.10 CPU cada (juntas usam 0.20)
+# - LB: 0.80 CPU
+# - Total: 1.0 CPU
+#
+# Divisao de memoria (total 350M):
+# - 2 APIs: 100M cada = 200M (margem enorme para Go runtime + cache)
+# - LB: 150M (buffers de conexao + heap do proxy)
+# - Total: 350M, zero sobra.
+
 x-api-base: &api-base
   image: sua-org/sua-api:latest
   build:
@@ -10,7 +28,7 @@ x-api-base: &api-base
     resources:
       limits:
         cpus: "0.10"
-        memory: 25M
+        memory: 100M
   networks:
     - rinha-net
 
@@ -21,25 +39,13 @@ services:
   api2:
     <<: *api-base
 
-  api3:
-    <<: *api-base
-
-  api4:
-    <<: *api-base
-
-  api5:
-    <<: *api-base
-
-  api6:
-    <<: *api-base
-
   lb:
     image: sua-org/seu-lb:latest
     build:
       context: ./lb
       dockerfile: Dockerfile
     environment:
-      - BACKENDS=http://api1:8080,http://api2:8080,http://api3:8080,http://api4:8080,http://api5:8080,http://api6:8080
+      - BACKENDS=http://api1:8080,http://api2:8080
       - LB_LOG=false
     ports:
       - "9999:8080"
@@ -47,15 +53,11 @@ services:
     depends_on:
       - api1
       - api2
-      - api3
-      - api4
-      - api5
-      - api6
     deploy:
       resources:
         limits:
-          cpus: "0.40"
-          memory: 100M
+          cpus: "0.80"
+          memory: 150M
     networks:
       - rinha-net
 
