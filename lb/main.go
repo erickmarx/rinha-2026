@@ -73,10 +73,11 @@ func main() {
 		},
 
 		// ErrorHandler é chamado se o backend estiver inacessível (connection refused, timeout, etc.).
-		// Logamos o erro para facilitar o diagnostico, mas nao alteramos a resposta ao cliente.
+		// Logamos o erro para diagnostico e devolvemos 502 Bad Gateway ao cliente,
+		// para que ele nao fique pendurado esperando uma resposta que nunca chegaria.
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			log.Printf("[LB] !! ERRO ao encaminhar %s %s -> %s: %v", r.Method, r.URL.Path, r.Host, err)
-			// Deixamos o ReverseProxy padrao escrever a resposta de erro no ResponseWriter.
+			http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		},
 	}
 
