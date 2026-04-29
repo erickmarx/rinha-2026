@@ -26,15 +26,14 @@ type Point struct {
 // Roda OFFLINE (no to-bin.go), entao performance nao eh critica —
 // precisamos de corretude e uma boa divisao dos dados.
 type KMeans struct {
-	Points     []Point   // todos os pontos do dataset
-	Centroids  [][14]float64 // k centroides (float64 para precisao)
-	Assignments []int    // qual cluster cada ponto pertence
-	K          int
+	Points      []Point
+	Centroids   [][14]float64
+	Assignments []int
+	K           int
 }
 
 // NewKMeans inicializa o k-means com k clusters.
-// Os centroides iniciais sao amostrados aleatoriamente do proprio dataset,
-// garantindo que comecam em regioes densas (nao no vazio).
+// Os centroides iniciais sao amostrados aleatoriamente do proprio dataset.
 func NewKMeans(points []Point, k int) *KMeans {
 	km := &KMeans{
 		Points:      points,
@@ -43,7 +42,6 @@ func NewKMeans(points []Point, k int) *KMeans {
 		K:           k,
 	}
 
-	// Inicializa centroides amostrando k pontos distintos do dataset.
 	rand.Seed(time.Now().UnixNano())
 	for i := 0; i < k; i++ {
 		idx := rand.Intn(len(points))
@@ -55,8 +53,7 @@ func NewKMeans(points []Point, k int) *KMeans {
 	return km
 }
 
-// distanceSquared calcula a distancia euclidiana ao quadrado entre um ponto
-// e um centroide. Usamos float64 para evitar acumulo de erro.
+// distanceSquared calcula a distancia euclidiana ao quadrado.
 func distanceSquared(p Point, c [14]float64) float64 {
 	var sum float64
 	for i := 0; i < 14; i++ {
@@ -67,7 +64,6 @@ func distanceSquared(p Point, c [14]float64) float64 {
 }
 
 // Run executa o algoritmo de Lloyd por no maximo maxIter iteracoes.
-// Para quando os centroides convergem (nao mudam mais significativamente).
 func (km *KMeans) Run(maxIter int) {
 	for iter := 0; iter < maxIter; iter++ {
 		changed := 0
@@ -125,31 +121,27 @@ func (km *KMeans) Run(maxIter int) {
 
 // ClusterResult contem os pontos reorganizados por cluster e os tamanhos.
 type ClusterResult struct {
-	Points  []Point // todos os pontos, agrupados por cluster
-	Sizes   []int   // tamanho de cada cluster
+	Points []Point
+	Sizes  []int
 }
 
 // Reorganize agrupa os pontos por cluster para escrita sequencial no binario.
 func (km *KMeans) Reorganize() ClusterResult {
-	// Conta quantos pontos cada cluster tem.
 	sizes := make([]int, km.K)
 	for _, c := range km.Assignments {
 		sizes[c]++
 	}
 
-	// Cria slices para cada cluster.
 	clusters := make([][]Point, km.K)
 	for i := 0; i < km.K; i++ {
 		clusters[i] = make([]Point, 0, sizes[i])
 	}
 
-	// Distribui os pontos nos clusters.
 	for i, p := range km.Points {
 		c := km.Assignments[i]
 		clusters[c] = append(clusters[c], p)
 	}
 
-	// Concatena todos os clusters em um unico slice.
 	var allPoints []Point
 	for i := 0; i < km.K; i++ {
 		allPoints = append(allPoints, clusters[i]...)
