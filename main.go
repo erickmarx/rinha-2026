@@ -36,6 +36,11 @@ func main() {
 		mux.HandleFunc("POST /fraud-score", src.Fraudscore)
 	}
 
-	fmt.Println("Servidor rodando na porta 8080...")
-	http.ListenAndServe(":8080", mux)
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	fmt.Printf("Servidor rodando na porta %s...\n", port)
+
+	http.ListenAndServe(":"+port, mux)
 }
