@@ -30,17 +30,24 @@ func main() {
 
 	defer f.Close()
 
-	ready = src.Mmap(f)
-
-	if ready {
-		mux.HandleFunc("POST /fraud-score", src.Fraudscore)
-	}
-
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
-	fmt.Printf("Servidor rodando na porta %s...\n", port)
 
-	http.ListenAndServe(":"+port, mux)
+	go func() {
+		fmt.Printf("Servidor escutando na porta %s (ainda carregando dados)...\n", port)
+		if err := http.ListenAndServe(":"+port, mux); err != nil {
+			panic(err)
+		}
+	}()
+
+	ready = src.Mmap(f)
+
+	if ready {
+		mux.HandleFunc("POST /fraud-score", src.Fraudscore)
+		fmt.Println("Dados carregados. API pronta para receber requisicoes.")
+	} else {
+		fmt.Println("FALHA ao carregar dataset. Endpoint /fraud-score nao registrado.")
+	}
 }

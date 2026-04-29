@@ -30,7 +30,11 @@ func Mmap(f *os.File) bool {
 
 func RegisterBinary(bin []byte, size int) {
 	syscall.Madvise(bin, syscall.MADV_WILLNEED)
-	totalRegistros := size / 60
 
+	totalRegistros := size / 60
 	dataset = (*[1 << 30]Registry)(unsafe.Pointer(&bin[0]))[:totalRegistros:totalRegistros]
+
+	for i := range len(dataset) {
+		_ = dataset[i].Label
+	}
 }
