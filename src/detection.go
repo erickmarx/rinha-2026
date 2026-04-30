@@ -70,22 +70,33 @@ func knnInsert(top *[5]Detected, count *int, k int, dist uint64, label string, o
 	}
 }
 
-// scanCluster escaneia todos os registros de um cluster usando AoS int16.
+// dimScanOrder é a ordem de dimensões do projeto C para early termination.
+var dimScanOrder = [14]int{5, 6, 2, 0, 7, 8, 11, 12, 9, 10, 1, 13, 3, 4}
+
+// scanCluster escaneia todos os registros de um cluster usando SoA int16
+// com early termination após cada dimensão (ordem empírica do C).
 func scanCluster(q [14]int16, clusterIdx int, top *[5]Detected, count *int, worstDist *uint64) {
 	c := clusters[clusterIdx]
 	for i := c.Start; i < c.End; i++ {
-		vec := vectorsData[i]
-		var sum int64
-		for j := 0; j < 14; j++ {
-			diff := int64(q[j]) - int64(vec[j])
-			sum += diff * diff
+		var sum uint64
+		skip := false
+		for _, dj := range dimScanOrder {
+			diff := int64(q[dj]) - int64(dimData[dj][i])
+			sum += uint64(diff * diff)
+			if sum > *worstDist {
+				skip = true
+				break
+			}
+		}
+		if skip {
+			continue
 		}
 
 		label := "fraud"
 		if labelsData[i] == 1 {
 			label = "legit"
 		}
-		knnInsert(top, count, 5, uint64(sum), label, origIDsData[i], worstDist)
+		knnInsert(top, count, 5, sum, label, origIDsData[i], worstDist)
 	}
 }
 
@@ -153,12 +164,8 @@ func Detect(input Vector) int {
 		sort.Slice(cands[:candCount], func(i, j int) bool {
 			return cands[i].lb < cands[j].lb
 		})
-		// Escaneia no maximo 20 clusters adicionais
-		limit := 20
-		if candCount < limit {
-			limit = candCount
-		}
-		for i := 0; i < limit && count < 5; i++ {
+		// Escaneia todos os clusters promissores ate encontrar 5 vizinhos
+		for i := 0; i < candCount && count < 5; i++ {
 			scanCluster(q, cands[i].idx, &top, &count, &worstDist)
 		}
 	}

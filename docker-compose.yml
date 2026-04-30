@@ -62,12 +62,16 @@ services:
       - GOMEMLIMIT=48MiB
 
   lb:
-    image: sua-org/haproxy-lb:latest
+    image: sua-org/seu-lb:latest
     build:
-      context: ./haproxy
+      context: ./lb
       dockerfile: Dockerfile
+    environment:
+      - BACKENDS=unix:///sockets/api1.sock,unix:///sockets/api2.sock,unix:///sockets/api3.sock,unix:///sockets/api4.sock
+      - LB_LOG=false
+      - GOMAXPROCS=1
     ports:
-      - "9999:9999"
+      - "9999:8080"
     restart: unless-stopped
     depends_on:
       - api1

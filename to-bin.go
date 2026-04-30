@@ -268,9 +268,9 @@ func bin() {
 		binary.Write(binFile, binary.LittleEndian, offsets[i])
 	}
 
-	// Vectors AoS (int16) — melhor localidade para scan escalar
-	for i := 0; i < n; i++ {
-		for j := 0; j < 14; j++ {
+	// Dims SoA (int16) — permite early termination no scan
+	for j := 0; j < 14; j++ {
+		for i := 0; i < n; i++ {
 			binary.Write(binFile, binary.LittleEndian, quantized[i][j])
 		}
 	}
