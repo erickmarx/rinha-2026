@@ -11,7 +11,7 @@ import (
 var (
 	clusters     []Cluster
 	totalRegs    int
-	dimData      [14][]int16
+	vectorsData  [][14]int16
 	labelsData   []uint8
 	origIDsData  []uint32
 )
@@ -86,12 +86,10 @@ func RegisterBinary(bin []byte) {
 		offset += 4
 	}
 
-	// Dim SoA — usar unsafe.Slice diretamente sobre o mmap
-	for j := 0; j < 14; j++ {
-		ptr := unsafe.Pointer(&bin[offset])
-		dimData[j] = unsafe.Slice((*int16)(ptr), int(n))
-		offset += int(n) * 2
-	}
+	// Vectors AoS int16
+	vecPtr := unsafe.Pointer(&bin[offset])
+	vectorsData = unsafe.Slice((*[14]int16)(vecPtr), int(n))
+	offset += int(n) * 14 * 2
 
 	// OrigIDs
 	origPtr := unsafe.Pointer(&bin[offset])

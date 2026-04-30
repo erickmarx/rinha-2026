@@ -70,13 +70,14 @@ func knnInsert(top *[5]Detected, count *int, k int, dist uint64, label string, o
 	}
 }
 
-// scanCluster escaneia todos os registros de um cluster usando SoA int16.
+// scanCluster escaneia todos os registros de um cluster usando AoS int16.
 func scanCluster(q [14]int16, clusterIdx int, top *[5]Detected, count *int, worstDist *uint64) {
 	c := clusters[clusterIdx]
 	for i := c.Start; i < c.End; i++ {
+		vec := vectorsData[i]
 		var sum int64
 		for j := 0; j < 14; j++ {
-			diff := int64(q[j]) - int64(dimData[j][i])
+			diff := int64(q[j]) - int64(vec[j])
 			sum += diff * diff
 		}
 

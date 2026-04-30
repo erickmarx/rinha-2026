@@ -268,14 +268,14 @@ func bin() {
 		binary.Write(binFile, binary.LittleEndian, offsets[i])
 	}
 
-	// Dims SoA
-	for j := 0; j < 14; j++ {
-		for i := 0; i < n; i++ {
+	// Vectors AoS (int16) — melhor localidade para scan escalar
+	for i := 0; i < n; i++ {
+		for j := 0; j < 14; j++ {
 			binary.Write(binFile, binary.LittleEndian, quantized[i][j])
 		}
 	}
 
-	// OrigIDs (antes de labels para alinhamento)
+	// OrigIDs (antes de labels para alinhamento a 4 bytes)
 	for i := 0; i < n; i++ {
 		binary.Write(binFile, binary.LittleEndian, result.Points[i].OrigID)
 	}
