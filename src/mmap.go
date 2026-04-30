@@ -1,28 +1,20 @@
 package src
 
 import (
+	"encoding/binary"
+	"math"
 	"os"
 	"syscall"
-	"unsafe"
 )
 
+// Registry representa um registro do dataset.
 type Registry struct {
 	Vector [14]float32
 	Label  uint32
 }
 
-// Cluster representa um grupo de registros similares encontrados pelo k-means.
-// Em vez de fazer scan linear em TODO o dataset (1M registros),
-// a API scaneia apenas nos registros do cluster mais proximo (~1k registros).
-type Cluster struct {
-	Centroid [14]float32 // centro geometrico do cluster
-	Data     []Registry  // slice apontando para os registros deste cluster no mmap
-}
-
-var (
-	clusters   []Cluster // todos os clusters (k = 1000)
-	totalRegs  int       // numero total de registros (para referencia)
-)
+// dataset global — carregado do mmap e acessado pela VP-Tree.
+var dataset []Registry
 
 func Mmap(f *os.File) bool {
 	info, _ := f.Stat()
@@ -41,44 +33,41 @@ func RegisterBinary(bin []byte) {
 	// Diz ao kernel para manter as paginas em RAM.
 	syscall.Madvise(bin, syscall.MADV_WILLNEED)
 
-	// Le o header: numero de clusters (k) e numero total de registros (n).
-	// O header ocupa os primeiros 8 bytes do arquivo.
-	k := *(*uint32)(unsafe.Pointer(&bin[0]))
-	n := *(*uint32)(unsafe.Pointer(&bin[4]))
-	totalRegs = int(n)
+	// Header: numero de registros (uint32)
+	n := binary.LittleEndian.Uint32(bin[0:])
 
-	// Le os k centroides (k x 14 float32 = k x 56 bytes).
-	// Comecam no byte 8.
-	centroidsPtr := unsafe.Pointer(&bin[8])
-	rawCentroids := (*[1 << 20][14]float32)(centroidsPtr)[:k:k]
-
-	// Le os k tamanhos (k x uint32 = k x 4 bytes).
-	// Comecam apos os centroides.
-	sizesOffset := 8 + int(k)*56
-	sizesPtr := unsafe.Pointer(&bin[sizesOffset])
-	rawSizes := (*[1 << 20]uint32)(sizesPtr)[:k:k]
-
-	// Os registros comecam apos os tamanhos.
-	dataOffset := sizesOffset + int(k)*4
-	dataPtr := unsafe.Pointer(&bin[dataOffset])
-	allData := (*[1 << 30]Registry)(dataPtr)[:n:n]
-
-	// Cria os slices de Cluster apontando para as regioes corretas de allData.
-	clusters = make([]Cluster, k)
-	idx := 0
-	for i := 0; i < int(k); i++ {
-		size := int(rawSizes[i])
-		clusters[i] = Cluster{
-			Centroid: rawCentroids[i],
-			Data:     allData[idx : idx+size],
+	// Copia registros do mmap para memoria Go (evita page faults durante queries).
+	// Cada registro: 14 float32 (56 bytes) + 1 uint32 (4 bytes) = 60 bytes.
+	dataset = make([]Registry, n)
+	for i := uint32(0); i < n; i++ {
+		off := 4 + int(i)*60
+		for j := 0; j < 14; j++ {
+			dataset[i].Vector[j] = math.Float32frombits(binary.LittleEndian.Uint32(bin[off+j*4:]))
 		}
-		idx += size
+		dataset[i].Label = binary.LittleEndian.Uint32(bin[off+56:])
 	}
 
-	// Warm-up: percorre todos os registros para forcar page faults no startup.
-	for _, c := range clusters {
-		for i := range len(c.Data) {
-			_ = c.Data[i].Label
-		}
+	// Warm-up: toca todos os registros para garantir que estao em RAM.
+	for i := range dataset {
+		_ = dataset[i].Label
+	}
+
+	// VP-Tree: le o numero de nos e os nos em si.
+	nodeOffset := 4 + int(n)*60
+	nodeCount := binary.LittleEndian.Uint32(bin[nodeOffset:])
+	vpNodes = make([]VPNode, nodeCount)
+
+	for i := uint32(0); i < nodeCount; i++ {
+		off := nodeOffset + 4 + int(i)*16
+		vpNodes[i].Index = int32(binary.LittleEndian.Uint32(bin[off:]))
+		vpNodes[i].Threshold = math.Float32frombits(binary.LittleEndian.Uint32(bin[off+4:]))
+		vpNodes[i].Inside = int32(binary.LittleEndian.Uint32(bin[off+8:]))
+		vpNodes[i].Outside = int32(binary.LittleEndian.Uint32(bin[off+12:]))
+	}
+	vpRoot = 0
+
+	// Warm-up da VP-Tree: toca todos os nos.
+	for i := range vpNodes {
+		_ = vpNodes[i].Index
 	}
 }

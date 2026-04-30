@@ -3,14 +3,14 @@
 # HARDWARE ALVO: 1 CPU e 350 MB de memoria TOTAIS (uso 100%).
 #
 # Divisao de CPU:
-# - 4 APIs: 0.12 CPU cada (juntas usam 0.48)
-#   Margem de seguranca: usam ~5% do allocado (~0.006 CPU real).
+# - 3 APIs: 0.16 CPU cada (juntas usam 0.48)
 # - LB: 0.52 CPU
 # - Total: 1.0 CPU
 #
 # Divisao de memoria:
-# - 4 APIs: 60M cada = 240M
-# - LB: 110M
+# - 3 APIs: 100M cada = 300M
+#   (dataset 60M + VP-Tree ~16M + heap Go = ~76M base + margem)
+# - LB: 50M
 # - Total: 350M, zero sobra.
 
 x-api-base: &api-base
@@ -24,8 +24,8 @@ x-api-base: &api-base
   deploy:
     resources:
       limits:
-        cpus: "0.12"
-        memory: 60M
+        cpus: "0.16"
+        memory: 100M
   networks:
     - rinha-net
 
@@ -39,16 +39,13 @@ services:
   api3:
     <<: *api-base
 
-  api4:
-    <<: *api-base
-
   lb:
     image: sua-org/seu-lb:latest
     build:
       context: ./lb
       dockerfile: Dockerfile
     environment:
-      - BACKENDS=http://api1:8080,http://api2:8080,http://api3:8080,http://api4:8080
+      - BACKENDS=http://api1:8080,http://api2:8080,http://api3:8080
       - LB_LOG=false
     ports:
       - "9999:8080"
@@ -57,12 +54,11 @@ services:
       - api1
       - api2
       - api3
-      - api4
     deploy:
       resources:
         limits:
           cpus: "0.52"
-          memory: 110M
+          memory: 50M
     networks:
       - rinha-net
 

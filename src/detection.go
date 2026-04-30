@@ -1,5 +1,7 @@
 package src
 
+import "math"
+
 // Detected representa um vizinho proximo encontrado no dataset.
 // Distance eh a distancia euclidiana ao quadrado.
 type Detected struct {
@@ -19,121 +21,25 @@ func labelString(code uint32) string {
 	return "fraud"
 }
 
-// centroidDistance calcula a distancia euclidiana ao quadrado entre um input
-// e o centroide de um cluster. Usado para decidir qual cluster explorar.
-func centroidDistance(input Vector, c [14]float32) float64 {
-	var sum float64
-	for i := 0; i < 14; i++ {
-		diff := input[i] - float64(c[i])
-		sum += diff * diff
-	}
-	return sum
-}
-
-// findNearestClusters compara o input com os centroides de todos os clusters
-// e retorna os indices dos N clusters mais proximos.
-// Essa operacao eh O(k) onde k=1000, muito rapida comparada ao scan de 1M.
-func findNearestClusters(input Vector, n int) []int {
-	// topN mantem os N clusters mais proximos em ordem crescente de distancia.
-	type clusterDist struct {
-		idx      int
-		distance float64
-	}
-	var topN []clusterDist
-
-	for i := range len(clusters) {
-		d := centroidDistance(input, clusters[i].Centroid)
-
-		pos := len(topN)
-		for j := range topN {
-			if d < topN[j].distance {
-				pos = j
-				break
-			}
-		}
-
-		if pos < n {
-			topN = append(topN, clusterDist{})
-			copy(topN[pos+1:], topN[pos:])
-			topN[pos] = clusterDist{idx: i, distance: d}
-			if len(topN) > n {
-				topN = topN[:n]
-			}
-		}
-	}
-
-	result := make([]int, len(topN))
-	for i, cd := range topN {
-		result[i] = cd.idx
-	}
-	return result
-}
-
-// Detect calcula o score de fraude usando KNN (k=5) com busca em multiplos clusters.
+// Detect calcula o score de fraude usando KNN (k=5) com VP-Tree.
 //
 // ESTRATEGIA:
-// 1. Encontra os 3 clusters mais proximos do input comparando com os centroides.
-// 2. Faz scan linear nos registros dos 3 clusters (~150 registros no total).
-// 3. Dos vizinhos encontrados em todos os clusters, pega os 5 mais proximos.
+// 1. Percorre a VP-Tree recursivamente com pruning.
+// 2. Coleta os 5 vizinhos mais proximos de TODOS os nos visitados.
+// 3. Classifica baseado nos 5 vizinhos.
 //
-// Por que 3 clusters:
-// - O vizinho real pode estar em um cluster adjacente, nao necessariamente
-//   no centroide mais proximo. Escannear 3 clusters recupera a maioria da
-//   precisao do scan completo com custo minimo.
-// - Reducao de 1.000.000 para ~150 comparacoes = ~6700x mais rapido.
+// A VP-Tree reduz a busca de O(n) para O(log n) em media, com pruning
+// que evita explorar regioes do espaco que nao podem conter vizinhos
+// melhores que os ja encontrados.
 func Detect(input Vector) FraudScore {
-	// PASSO 1: Descobre os 3 clusters mais proximos.
-	nearest := findNearestClusters(input, 3)
-
-	// PASSO 2: KNN scan linear nos registros dos 3 clusters combinados.
 	var top [5]Detected
 	var count int
+	var worstDist float64 = math.MaxFloat64
 
-	for _, clusterIdx := range nearest {
-		data := clusters[clusterIdx].Data
+	knnSearch(vpRoot, input, 5, &worstDist, &top, &count)
 
-		for i := range len(data) {
-			reg := &data[i]
-
-			var sum float32
-			for j := range 14 {
-				diff := float32(input[j]) - reg.Vector[j]
-				sum += diff * diff
-			}
-
-			pos := count
-			for j := range count {
-				if float64(sum) < top[j].Distance {
-					pos = j
-					break
-				}
-			}
-
-			if pos >= 5 {
-				continue
-			}
-
-			for j := count; j > pos; j-- {
-				if j < 5 {
-					top[j] = top[j-1]
-				}
-			}
-
-			label := "fraud"
-			if reg.Label == 1 {
-				label = "legit"
-			}
-
-			top[pos] = Detected{Distance: float64(sum), Label: label}
-			if count < 5 {
-				count++
-			}
-		}
-	}
-
-	// PASSO 3: Classifica baseado nos 5 vizinhos mais proximos dos 3 clusters.
 	fraudCount := 0
-	for i := range count {
+	for i := 0; i < count; i++ {
 		if top[i].Label == "fraud" {
 			fraudCount++
 		}
