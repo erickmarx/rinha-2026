@@ -1,7 +1,7 @@
 package src
 
 import (
-	"io"
+	"encoding/json"
 	"log"
 	"net/http"
 	"time"
@@ -28,20 +28,13 @@ var fraudScoreResponses = [6][]byte{
 func Fraudscore(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
-	// Le o body inteiro (payloads do teste sao pequenos, ~500-800 bytes).
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		apiLog("ERRO ler body: %v", err)
-		http.Error(w, "Erro ao ler body", http.StatusBadRequest)
-		return
-	}
-
 	var req Transaction
-	if err := ParseTransactionJSON(body, &req); err != nil {
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		if r.Context().Err() != nil {
 			apiLog("WARN cliente cancelou: %v", r.Context().Err())
 		} else {
-			apiLog("ERRO parse JSON: %v", err)
+			apiLog("ERRO decode JSON: %v", err)
 		}
 		http.Error(w, "JSON invalido", http.StatusBadRequest)
 		return
