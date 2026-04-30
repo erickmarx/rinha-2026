@@ -49,14 +49,10 @@ services:
       - GOMEMLIMIT=48MiB
 
   lb:
-    image: sua-org/seu-lb:latest
+    image: sua-org/haproxy-lb:latest
     build:
-      context: ./lb
+      context: ./haproxy
       dockerfile: Dockerfile
-    environment:
-      - BACKENDS=unix:///sockets/api1.sock,unix:///sockets/api2.sock
-      - LB_LOG=false
-      - GOMAXPROCS=1
     ports:
       - "9999:8080"
     restart: unless-stopped
@@ -67,7 +63,7 @@ services:
       resources:
         limits:
           cpus: "0.52"
-          memory: 110M
+          memory: 50M
     networks:
       - rinha-net
     volumes:
