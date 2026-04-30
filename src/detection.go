@@ -145,9 +145,9 @@ func Detect(input Vector) FraudScore {
 	}
 
 	ratio := float32(fraudCount) / knnK
-	// Threshold ~0.57 equivale a 4/7 frauds (mesma sensibilidade aproximada de 3/5=0.6)
+	// Threshold fixo em 0.60 conforme regras da competicao.
 	return FraudScore{
-		Approved:   ratio < float32(0.57),
+		Approved:   ratio < float32(0.60),
 		FraudScore: ratio,
 	}
 }
