@@ -1,5 +1,7 @@
 package src
 
+import "sort"
+
 // Detected representa um vizinho proximo encontrado no dataset.
 type Detected struct {
 	Distance float64
@@ -20,7 +22,6 @@ func centroidDistance(input Vector, c [14]float32) float64 {
 
 // lowerBoundBoundingBox calcula a distancia minima possivel entre o input
 // e qualquer ponto dentro da bounding box do cluster.
-// Se a query estiver dentro da bbox em uma dimensao, contribuicao = 0.
 func lowerBoundBoundingBox(input Vector, cluster Cluster) float64 {
 	var sum float64
 	for i := 0; i < 14; i++ {
@@ -39,7 +40,7 @@ func lowerBoundBoundingBox(input Vector, cluster Cluster) float64 {
 }
 
 // knnInsert insere um candidato no top-k mantendo ordenado por distancia.
-// Em caso de empate na distancia, desempata pelo OrigID menor (deterministico).
+// Em caso de empate na distancia, desempata pelo OrigID menor.
 func knnInsert(top *[5]Detected, count *int, k int, dist float64, label string, origID uint32, worstDist *float64) {
 	pos := *count
 	for i := 0; i < *count; i++ {
@@ -69,7 +70,7 @@ func knnInsert(top *[5]Detected, count *int, k int, dist float64, label string, 
 	}
 }
 
-// scanCluster escaneia todos os registros de um cluster e mantem os melhores no top-k.
+// scanCluster escaneia todos os registros de um cluster.
 func scanCluster(input Vector, clusterIdx int, top *[5]Detected, count *int, worstDist *float64) {
 	data := clusters[clusterIdx].Data
 	for i := range len(data) {
@@ -87,44 +88,81 @@ func scanCluster(input Vector, clusterIdx int, top *[5]Detected, count *int, wor
 	}
 }
 
-// Detect calcula o score de fraude usando IVF com bounding-box repair.
+// Detect calcula o score de fraude usando IVF com bounding-box repair limitado.
 //
 // ESTRATEGIA:
-// 1. Encontra o cluster mais proximo (nprobe=1).
-// 2. Escaneia o cluster inicial.
-// 3. Repair: para cada cluster nao visitado, calcula lower_bound da bbox.
-//    Se lower_bound <= worstDist atual do top-5, escaneia o cluster.
+// 1. Escolhe os 3 clusters mais proximos (nprobe=3).
+// 2. Escaneia os clusters iniciais.
+// 3. Se ainda nao tem 5 vizinhos, faz repair limitado: ordena os clusters
+//    restantes por lower_bound e escaneia os 20 mais promissores.
 // 4. Retorna a contagem de frauds nos 5 vizinhos mais proximos.
 func Detect(input Vector) int {
-	// PASSO 1: Encontra o cluster mais proximo (nprobe=1).
-	bestCluster := 0
-	bestDist := centroidDistance(input, clusters[0].Centroid)
-	for i := 1; i < len(clusters); i++ {
+	// PASSO 1: Encontra os 3 clusters mais proximos.
+	type cdist struct {
+		idx  int
+		dist float64
+	}
+	var nearest [3]cdist
+	var nearestLen int
+
+	for i := range clusters {
 		d := centroidDistance(input, clusters[i].Centroid)
-		if d < bestDist {
-			bestDist = d
-			bestCluster = i
+		pos := nearestLen
+		for j := 0; j < nearestLen; j++ {
+			if d < nearest[j].dist {
+				pos = j
+				break
+			}
+		}
+		if pos < 3 {
+			for j := nearestLen; j > pos; j-- {
+				if j < 3 {
+					nearest[j] = nearest[j-1]
+				}
+			}
+			nearest[pos] = cdist{idx: i, dist: d}
+			if nearestLen < 3 {
+				nearestLen++
+			}
 		}
 	}
 
-	// PASSO 2: Escaneia o cluster inicial.
+	// PASSO 2: Escaneia os clusters iniciais.
 	var top [5]Detected
 	var count int
 	var worstDist float64 = 1e308
 
 	visited := make([]bool, len(clusters))
-	scanCluster(input, bestCluster, &top, &count, &worstDist)
-	visited[bestCluster] = true
+	for i := 0; i < nearestLen; i++ {
+		scanCluster(input, nearest[i].idx, &top, &count, &worstDist)
+		visited[nearest[i].idx] = true
+	}
 
-	// PASSO 3: Bounding-box repair.
-	// Para cada cluster nao visitado, verifica se a bbox pode conter um vizinho melhor.
-	for i := range clusters {
-		if visited[i] {
-			continue
+	// PASSO 3: Repair limitado — so se ainda nao temos 5 vizinhos.
+	if count < 5 {
+		type repairCand struct {
+			idx int
+			lb  float64
 		}
-		lb := lowerBoundBoundingBox(input, clusters[i])
-		if count < 5 || lb <= worstDist {
-			scanCluster(input, i, &top, &count, &worstDist)
+		cands := make([]repairCand, 0, len(clusters)-nearestLen)
+		for i := range clusters {
+			if visited[i] {
+				continue
+			}
+			lb := lowerBoundBoundingBox(input, clusters[i])
+			cands = append(cands, repairCand{idx: i, lb: lb})
+		}
+		// Ordena pelos mais promissores (menor lower_bound)
+		sort.Slice(cands, func(i, j int) bool {
+			return cands[i].lb < cands[j].lb
+		})
+		// Escaneia no maximo 20 clusters adicionais
+		limit := 20
+		if len(cands) < limit {
+			limit = len(cands)
+		}
+		for i := 0; i < limit && count < 5; i++ {
+			scanCluster(input, cands[i].idx, &top, &count, &worstDist)
 		}
 	}
 
