@@ -26,8 +26,8 @@ x-api-base: &api-base
   deploy:
     resources:
       limits:
-        cpus: "0.12"
-        memory: 60M
+        cpus: "0.24"
+        memory: 120M
   networks:
     - rinha-net
 
@@ -38,19 +38,13 @@ services:
   api2:
     <<: *api-base
 
-  api3:
-    <<: *api-base
-
-  api4:
-    <<: *api-base
-
   lb:
     image: sua-org/seu-lb:latest
     build:
       context: ./lb
       dockerfile: Dockerfile
     environment:
-      - BACKENDS=http://api1:8080,http://api2:8080,http://api3:8080,http://api4:8080
+      - BACKENDS=http://api1:8080,http://api2:8080
       - LB_LOG=false
       - GOMAXPROCS=1
     ports:
