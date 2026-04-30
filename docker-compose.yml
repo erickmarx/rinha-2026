@@ -20,6 +20,8 @@ x-api-base: &api-base
     dockerfile: Dockerfile
   environment:
     - PORT=8080
+    - GOMAXPROCS=1
+    - GOMEMLIMIT=48MiB
   restart: unless-stopped
   deploy:
     resources:
@@ -50,6 +52,7 @@ services:
     environment:
       - BACKENDS=http://api1:8080,http://api2:8080,http://api3:8080,http://api4:8080
       - LB_LOG=false
+      - GOMAXPROCS=1
     ports:
       - "9999:8080"
     restart: unless-stopped
