@@ -1,7 +1,7 @@
 package src
 
 import (
-	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"time"
@@ -15,8 +15,7 @@ func apiLog(format string, v ...interface{}) {
 	}
 }
 
-// fraudScoreResponses pré-computa as 6 respostas JSON possíveis (k=5, threshold=0.60).
-// Elimina completamente a serialização JSON no hot path.
+// fraudScoreResponses pre-computa as 6 respostas JSON possiveis (k=5, threshold=0.60).
 var fraudScoreResponses = [6][]byte{
 	[]byte(`{"approved":true,"fraud_score":0}`),
 	[]byte(`{"approved":true,"fraud_score":0.2}`),
@@ -29,13 +28,20 @@ var fraudScoreResponses = [6][]byte{
 func Fraudscore(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
-	var req Transaction
+	// Le o body inteiro (payloads do teste sao pequenos, ~500-800 bytes).
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		apiLog("ERRO ler body: %v", err)
+		http.Error(w, "Erro ao ler body", http.StatusBadRequest)
+		return
+	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	var req Transaction
+	if err := ParseTransactionJSON(body, &req); err != nil {
 		if r.Context().Err() != nil {
 			apiLog("WARN cliente cancelou: %v", r.Context().Err())
 		} else {
-			apiLog("ERRO decode JSON: %v", err)
+			apiLog("ERRO parse JSON: %v", err)
 		}
 		http.Error(w, "JSON invalido", http.StatusBadRequest)
 		return
