@@ -87,7 +87,8 @@ func (n *Normalizer) minutes_since_last_tx() float64 {
 		return -1
 	}
 
-	diff := time.Since(*n.tx.LastTransaction.Timestamp)
+	// CORRECAO: usar requested_at da transacao atual, nao time.Now()
+	diff := n.tx.Transaction.RequestedAt.Sub(*n.tx.LastTransaction.Timestamp)
 
 	return clamp(diff.Minutes() / maxMinutes)
 }
@@ -123,8 +124,13 @@ func (n *Normalizer) card_present() float64 {
 }
 
 func (n *Normalizer) unknown_merchant() int {
-	_, known := mccRiskValue(n.tx.Merchant.MCC)
-	return known
+	// CORRECAO: verificar se merchant.id esta em customer.known_merchants
+	for _, m := range n.tx.Customer.KnownMerchants {
+		if m == n.tx.Merchant.ID {
+			return 0 // merchant conhecido
+		}
+	}
+	return 1 // merchant desconhecido
 }
 
 func (n *Normalizer) mcc_risk() float64 {
