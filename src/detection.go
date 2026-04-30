@@ -98,47 +98,25 @@ func Detect(input Vector) int {
 		input32[i] = float32(input[i])
 	}
 
-	// PASSO 1: Encontra os 3 clusters mais proximos (zero alocacao).
-	type cdist struct {
-		idx  int
-		dist float64
-	}
-	var nearest [3]cdist
-	var nearestLen int
-
-	for i := range clusters {
+	// PASSO 1: Encontra o cluster mais proximo (zero alocacao).
+	bestCluster := 0
+	bestDist := centroidDistance(input, clusters[0].Centroid)
+	for i := 1; i < len(clusters); i++ {
 		d := centroidDistance(input, clusters[i].Centroid)
-		pos := nearestLen
-		for j := 0; j < nearestLen; j++ {
-			if d < nearest[j].dist {
-				pos = j
-				break
-			}
-		}
-		if pos < 3 {
-			for j := nearestLen; j > pos; j-- {
-				if j < 3 {
-					nearest[j] = nearest[j-1]
-				}
-			}
-			nearest[pos] = cdist{idx: i, dist: d}
-			if nearestLen < 3 {
-				nearestLen++
-			}
+		if d < bestDist {
+			bestDist = d
+			bestCluster = i
 		}
 	}
 
-	// PASSO 2: Escaneia os clusters iniciais.
+	// PASSO 2: Escaneia o cluster inicial.
 	var top [5]Detected
 	var count int
 	var worstDist float64 = 1e308
 
-	// Array fixo na stack — zero alocacao de heap.
 	var visited [256]bool
-	for i := 0; i < nearestLen; i++ {
-		scanCluster(&input32, nearest[i].idx, &top, &count, &worstDist)
-		visited[nearest[i].idx] = true
-	}
+	scanCluster(&input32, bestCluster, &top, &count, &worstDist)
+	visited[bestCluster] = true
 
 	// PASSO 3: Repair limitado — so se ainda nao temos 5 vizinhos.
 	if count < 5 {
