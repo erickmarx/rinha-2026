@@ -71,32 +71,16 @@ func knnInsert(top *[5]Detected, count *int, k int, dist float64, label string, 
 }
 
 // scanCluster escaneia todos os registros de um cluster.
-// OPTIMIZADO: loop unrolled nas 14 dims + input pre-convertido para float32.
 func scanCluster(input32 *[14]float32, clusterIdx int, top *[5]Detected, count *int, worstDist *float64) {
 	data := clusters[clusterIdx].Data
 	for i := range len(data) {
 		reg := &data[i]
 
-		// Loop unrolled: 14 dimensoes, sem bounds checking
-		d0 := input32[0] - reg.Vector[0]
-		d1 := input32[1] - reg.Vector[1]
-		d2 := input32[2] - reg.Vector[2]
-		d3 := input32[3] - reg.Vector[3]
-		d4 := input32[4] - reg.Vector[4]
-		d5 := input32[5] - reg.Vector[5]
-		d6 := input32[6] - reg.Vector[6]
-		d7 := input32[7] - reg.Vector[7]
-		d8 := input32[8] - reg.Vector[8]
-		d9 := input32[9] - reg.Vector[9]
-		d10 := input32[10] - reg.Vector[10]
-		d11 := input32[11] - reg.Vector[11]
-		d12 := input32[12] - reg.Vector[12]
-		d13 := input32[13] - reg.Vector[13]
-
-		sum := d0*d0 + d1*d1 + d2*d2 + d3*d3 +
-			d4*d4 + d5*d5 + d6*d6 + d7*d7 +
-			d8*d8 + d9*d9 + d10*d10 + d11*d11 +
-			d12*d12 + d13*d13
+		var sum float32
+		for j := range 14 {
+			diff := input32[j] - reg.Vector[j]
+			sum += diff * diff
+		}
 
 		label := "fraud"
 		if reg.Label == 1 {
