@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+const fixScale = 10000.0
+
 type RegistroJSON struct {
 	Vector []float32 `json:"vector"`
 	Label  string    `json:"label"`
@@ -138,6 +140,17 @@ func (km *KMeans) Reorganize() ClusterResult {
 	}
 }
 
+func quantize(v float32) int16 {
+	x := float64(v) * fixScale
+	if x > 32767.0 {
+		return 32767
+	}
+	if x < -32768.0 {
+		return -32768
+	}
+	return int16(math.Round(x))
+}
+
 func main() {
 	bin()
 }
@@ -178,26 +191,31 @@ func bin() {
 	result := km.Reorganize()
 	fmt.Printf("[K-Means] Concluido em %v\n", time.Since(start))
 
-	// Calcular bounding boxes
-	bboxMin := make([][14]float32, k)
-	bboxMax := make([][14]float32, k)
+	n := len(points)
+
+	// Quantizar vetores e calcular bounding boxes em int16
+	bboxMin := make([][14]int16, k)
+	bboxMax := make([][14]int16, k)
 	for i := 0; i < k; i++ {
 		for j := 0; j < 14; j++ {
-			bboxMin[i][j] = math.MaxFloat32
-			bboxMax[i][j] = -math.MaxFloat32
+			bboxMin[i][j] = 32767
+			bboxMax[i][j] = -32768
 		}
 	}
 
+	quantized := make([][14]int16, n)
 	idx := 0
 	for i := 0; i < k; i++ {
 		for r := 0; r < result.Sizes[i]; r++ {
 			p := result.Points[idx]
 			for j := 0; j < 14; j++ {
-				if p.Vector[j] < bboxMin[i][j] {
-					bboxMin[i][j] = p.Vector[j]
+				qv := quantize(p.Vector[j])
+				quantized[idx][j] = qv
+				if qv < bboxMin[i][j] {
+					bboxMin[i][j] = qv
 				}
-				if p.Vector[j] > bboxMax[i][j] {
-					bboxMax[i][j] = p.Vector[j]
+				if qv > bboxMax[i][j] {
+					bboxMax[i][j] = qv
 				}
 			}
 			idx++
@@ -212,43 +230,61 @@ func bin() {
 	}
 	defer binFile.Close()
 
-	n := uint32(len(points))
+	// Header
+	binary.Write(binFile, binary.LittleEndian, [4]byte{'I', 'V', 'F', 'G'})
+	binary.Write(binFile, binary.LittleEndian, uint32(n))
 	binary.Write(binFile, binary.LittleEndian, uint32(k))
-	binary.Write(binFile, binary.LittleEndian, n)
+	binary.Write(binFile, binary.LittleEndian, uint32(14))
+	binary.Write(binFile, binary.LittleEndian, float32(fixScale))
 
-	// Centroides
+	// Centroids
 	for i := 0; i < k; i++ {
 		for j := 0; j < 14; j++ {
 			binary.Write(binFile, binary.LittleEndian, float32(km.Centroids[i][j]))
 		}
 	}
 
-	// Bounding boxes
+	// BboxMin
 	for i := 0; i < k; i++ {
 		for j := 0; j < 14; j++ {
 			binary.Write(binFile, binary.LittleEndian, bboxMin[i][j])
 		}
 	}
+
+	// BboxMax
 	for i := 0; i < k; i++ {
 		for j := 0; j < 14; j++ {
 			binary.Write(binFile, binary.LittleEndian, bboxMax[i][j])
 		}
 	}
 
-	// Tamanhos
+	// Offsets
+	offsets := make([]uint32, k+1)
+	offsets[0] = 0
 	for i := 0; i < k; i++ {
-		binary.Write(binFile, binary.LittleEndian, uint32(result.Sizes[i]))
+		offsets[i+1] = offsets[i] + uint32(result.Sizes[i])
+	}
+	for i := 0; i <= k; i++ {
+		binary.Write(binFile, binary.LittleEndian, offsets[i])
 	}
 
-	// Registros
-	for _, p := range result.Points {
-		for j := 0; j < 14; j++ {
-			binary.Write(binFile, binary.LittleEndian, p.Vector[j])
+	// Dims SoA
+	for j := 0; j < 14; j++ {
+		for i := 0; i < n; i++ {
+			binary.Write(binFile, binary.LittleEndian, quantized[i][j])
 		}
-		binary.Write(binFile, binary.LittleEndian, p.Label)
-		binary.Write(binFile, binary.LittleEndian, p.OrigID)
+	}
+
+	// OrigIDs (antes de labels para alinhamento)
+	for i := 0; i < n; i++ {
+		binary.Write(binFile, binary.LittleEndian, result.Points[i].OrigID)
+	}
+
+	// Labels
+	for i := 0; i < n; i++ {
+		binary.Write(binFile, binary.LittleEndian, uint8(result.Points[i].Label))
 	}
 
 	binFile.Sync()
-	fmt.Printf("[K-Means] dataset.bin gerado com sucesso! (k=%d, n=%d)\n", k, len(points))
+	fmt.Printf("[K-Means] dataset.bin gerado com sucesso! (k=%d, n=%d, scale=%.0f)\n", k, n, fixScale)
 }

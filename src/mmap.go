@@ -8,23 +8,21 @@ import (
 	"unsafe"
 )
 
-type Registry struct {
-	Vector [14]float32
-	Label  uint32
-	OrigID uint32
-}
+var (
+	clusters     []Cluster
+	totalRegs    int
+	dimData      [14][]int16
+	labelsData   []uint8
+	origIDsData  []uint32
+)
 
 type Cluster struct {
 	Centroid [14]float32
-	BboxMin  [14]float32
-	BboxMax  [14]float32
-	Data     []Registry
+	BboxMin  [14]int16
+	BboxMax  [14]int16
+	Start    int
+	End      int
 }
-
-var (
-	clusters  []Cluster
-	totalRegs int
-)
 
 func Mmap(f *os.File) bool {
 	info, _ := f.Stat()
@@ -42,66 +40,85 @@ func Mmap(f *os.File) bool {
 func RegisterBinary(bin []byte) {
 	syscall.Madvise(bin, syscall.MADV_WILLNEED)
 
-	k := binary.LittleEndian.Uint32(bin[0:])
+	if string(bin[0:4]) != "IVFG" {
+		panic("dataset.bin: magic invalido, esperado IVFG")
+	}
+
 	n := binary.LittleEndian.Uint32(bin[4:])
+	k := binary.LittleEndian.Uint32(bin[8:])
+	// d := binary.LittleEndian.Uint32(bin[12:])
+	// scale := math.Float32frombits(binary.LittleEndian.Uint32(bin[16:]))
 	totalRegs = int(n)
 
-	// Centroides
+	offset := 20
+
+	// Centroids
 	centroids := make([][14]float32, k)
 	for i := uint32(0); i < k; i++ {
-		off := 8 + int(i)*56
 		for j := 0; j < 14; j++ {
-			centroids[i][j] = math.Float32frombits(binary.LittleEndian.Uint32(bin[off+j*4:]))
+			centroids[i][j] = math.Float32frombits(binary.LittleEndian.Uint32(bin[offset:]))
+			offset += 4
 		}
 	}
 
 	// BboxMin
-	bboxMin := make([][14]float32, k)
-	offset := 8 + int(k)*56
+	bboxMin := make([][14]int16, k)
 	for i := uint32(0); i < k; i++ {
-		off := offset + int(i)*56
 		for j := 0; j < 14; j++ {
-			bboxMin[i][j] = math.Float32frombits(binary.LittleEndian.Uint32(bin[off+j*4:]))
+			bboxMin[i][j] = int16(binary.LittleEndian.Uint16(bin[offset:]))
+			offset += 2
 		}
 	}
 
 	// BboxMax
-	bboxMax := make([][14]float32, k)
-	offset += int(k) * 56
+	bboxMax := make([][14]int16, k)
 	for i := uint32(0); i < k; i++ {
-		off := offset + int(i)*56
 		for j := 0; j < 14; j++ {
-			bboxMax[i][j] = math.Float32frombits(binary.LittleEndian.Uint32(bin[off+j*4:]))
+			bboxMax[i][j] = int16(binary.LittleEndian.Uint16(bin[offset:]))
+			offset += 2
 		}
 	}
 
-	// Sizes
-	sizes := make([]uint32, k)
-	offset += int(k) * 56
-	for i := uint32(0); i < k; i++ {
-		sizes[i] = binary.LittleEndian.Uint32(bin[offset+int(i)*4:])
+	// Offsets
+	offsets := make([]uint32, k+1)
+	for i := uint32(0); i <= k; i++ {
+		offsets[i] = binary.LittleEndian.Uint32(bin[offset:])
+		offset += 4
 	}
 
-	// Registros
-	dataOffset := offset + int(k)*4
-	dataPtr := unsafe.Pointer(&bin[dataOffset])
-	allData := unsafe.Slice((*Registry)(dataPtr), int(n))
-
-	// Warm-up
-	for i := range allData {
-		_ = allData[i].Label
+	// Dim SoA — usar unsafe.Slice diretamente sobre o mmap
+	for j := 0; j < 14; j++ {
+		ptr := unsafe.Pointer(&bin[offset])
+		dimData[j] = unsafe.Slice((*int16)(ptr), int(n))
+		offset += int(n) * 2
 	}
 
+	// OrigIDs
+	origPtr := unsafe.Pointer(&bin[offset])
+	origIDsData = unsafe.Slice((*uint32)(origPtr), int(n))
+	offset += int(n) * 4
+
+	// Labels
+	labelsPtr := unsafe.Pointer(&bin[offset])
+	labelsData = unsafe.Slice((*uint8)(labelsPtr), int(n))
+	offset += int(n)
+
+	// Warm-up: touch all pages via labels (pequeno e linear)
+	var sum uint8
+	for i := range labelsData {
+		sum += labelsData[i]
+	}
+	_ = sum
+
+	// Build clusters
 	clusters = make([]Cluster, k)
-	idx := 0
 	for i := 0; i < int(k); i++ {
-		size := int(sizes[i])
 		clusters[i] = Cluster{
 			Centroid: centroids[i],
 			BboxMin:  bboxMin[i],
 			BboxMax:  bboxMax[i],
-			Data:     allData[idx : idx+size],
+			Start:    int(offsets[i]),
+			End:      int(offsets[i+1]),
 		}
-		idx += size
 	}
 }

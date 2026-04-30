@@ -4,13 +4,13 @@ import "sort"
 
 // Detected representa um vizinho proximo encontrado no dataset.
 type Detected struct {
-	Distance float64
+	Distance uint64
 	Label    string
 	OrigID   uint32
 }
 
 // centroidDistance calcula a distancia euclidiana ao quadrado entre um input
-// e o centroide de um cluster.
+// e o centroide de um cluster (em float64, so usado para escolher cluster).
 func centroidDistance(input Vector, c [14]float32) float64 {
 	var sum float64
 	for i := 0; i < 14; i++ {
@@ -20,20 +20,20 @@ func centroidDistance(input Vector, c [14]float32) float64 {
 	return sum
 }
 
-// lowerBoundBoundingBox calcula a distancia minima possivel entre o input
-// e qualquer ponto dentro da bounding box do cluster.
-func lowerBoundBoundingBox(input Vector, cluster Cluster) float64 {
-	var sum float64
+// lowerBoundBoundingBox calcula a distancia minima possivel entre a query
+// quantizada e qualquer ponto dentro da bounding box do cluster.
+func lowerBoundBoundingBox(q [14]int16, cluster Cluster) uint64 {
+	var sum uint64
 	for i := 0; i < 14; i++ {
-		v := input[i]
-		minVal := float64(cluster.BboxMin[i])
-		maxVal := float64(cluster.BboxMax[i])
+		v := int64(q[i])
+		minVal := int64(cluster.BboxMin[i])
+		maxVal := int64(cluster.BboxMax[i])
 		if v < minVal {
 			diff := v - minVal
-			sum += diff * diff
+			sum += uint64(diff * diff)
 		} else if v > maxVal {
 			diff := v - maxVal
-			sum += diff * diff
+			sum += uint64(diff * diff)
 		}
 	}
 	return sum
@@ -41,7 +41,7 @@ func lowerBoundBoundingBox(input Vector, cluster Cluster) float64 {
 
 // knnInsert insere um candidato no top-k mantendo ordenado por distancia.
 // Em caso de empate na distancia, desempata pelo OrigID menor.
-func knnInsert(top *[5]Detected, count *int, k int, dist float64, label string, origID uint32, worstDist *float64) {
+func knnInsert(top *[5]Detected, count *int, k int, dist uint64, label string, origID uint32, worstDist *uint64) {
 	pos := *count
 	for i := 0; i < *count; i++ {
 		if dist < top[i].Distance {
@@ -70,35 +70,49 @@ func knnInsert(top *[5]Detected, count *int, k int, dist float64, label string, 
 	}
 }
 
-// scanCluster escaneia todos os registros de um cluster.
-func scanCluster(input32 *[14]float32, clusterIdx int, top *[5]Detected, count *int, worstDist *float64) {
-	data := clusters[clusterIdx].Data
-	for i := range len(data) {
-		reg := &data[i]
-
-		var sum float32
-		for j := range 14 {
-			diff := input32[j] - reg.Vector[j]
+// scanCluster escaneia todos os registros de um cluster usando SoA int16.
+func scanCluster(q [14]int16, clusterIdx int, top *[5]Detected, count *int, worstDist *uint64) {
+	c := clusters[clusterIdx]
+	for i := c.Start; i < c.End; i++ {
+		var sum int64
+		for j := 0; j < 14; j++ {
+			diff := int64(q[j]) - int64(dimData[j][i])
 			sum += diff * diff
 		}
 
 		label := "fraud"
-		if reg.Label == 1 {
+		if labelsData[i] == 1 {
 			label = "legit"
 		}
-		knnInsert(top, count, 5, float64(sum), label, reg.OrigID, worstDist)
+		knnInsert(top, count, 5, uint64(sum), label, origIDsData[i], worstDist)
 	}
+}
+
+const fixScale = 10000.0
+
+func quantizeInput(v float64) int16 {
+	x := v * fixScale
+	if x > 32767.0 {
+		return 32767
+	}
+	if x < -32768.0 {
+		return -32768
+	}
+	if x >= 0 {
+		return int16(x + 0.5)
+	}
+	return int16(x - 0.5)
 }
 
 // Detect calcula o score de fraude usando IVF com bounding-box repair limitado.
 func Detect(input Vector) int {
-	// PRE-CONVERSAO: float64 -> float32 uma unica vez.
-	var input32 [14]float32
+	// Quantiza query para int16 uma unica vez.
+	var q [14]int16
 	for i := 0; i < 14; i++ {
-		input32[i] = float32(input[i])
+		q[i] = quantizeInput(input[i])
 	}
 
-	// PASSO 1: Encontra o cluster mais proximo (zero alocacao).
+	// PASSO 1: Encontra o cluster mais proximo.
 	bestCluster := 0
 	bestDist := centroidDistance(input, clusters[0].Centroid)
 	for i := 1; i < len(clusters); i++ {
@@ -112,17 +126,17 @@ func Detect(input Vector) int {
 	// PASSO 2: Escaneia o cluster inicial.
 	var top [5]Detected
 	var count int
-	var worstDist float64 = 1e308
+	var worstDist uint64 = 1<<63 - 1 // max uint64 aprox
 
 	var visited [256]bool
-	scanCluster(&input32, bestCluster, &top, &count, &worstDist)
+	scanCluster(q, bestCluster, &top, &count, &worstDist)
 	visited[bestCluster] = true
 
 	// PASSO 3: Repair limitado — so se ainda nao temos 5 vizinhos.
 	if count < 5 {
 		type repairCand struct {
 			idx int
-			lb  float64
+			lb  uint64
 		}
 		var cands [256]repairCand
 		candCount := 0
@@ -130,7 +144,7 @@ func Detect(input Vector) int {
 			if visited[i] {
 				continue
 			}
-			lb := lowerBoundBoundingBox(input, clusters[i])
+			lb := lowerBoundBoundingBox(q, clusters[i])
 			cands[candCount] = repairCand{idx: i, lb: lb}
 			candCount++
 		}
@@ -144,7 +158,7 @@ func Detect(input Vector) int {
 			limit = candCount
 		}
 		for i := 0; i < limit && count < 5; i++ {
-			scanCluster(&input32, cands[i].idx, &top, &count, &worstDist)
+			scanCluster(q, cands[i].idx, &top, &count, &worstDist)
 		}
 	}
 
