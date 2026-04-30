@@ -7,18 +7,6 @@ type Detected struct {
 	Label    string
 }
 
-type FraudScore struct {
-	Approved   bool    `json:"approved"`
-	FraudScore float32 `json:"fraud_score"`
-}
-
-func labelString(code uint32) string {
-	if code == 1 {
-		return "legit"
-	}
-	return "fraud"
-}
-
 // centroidDistance calcula a distancia euclidiana ao quadrado entre um input
 // e o centroide de um cluster. Usado para decidir qual cluster explorar.
 func centroidDistance(input Vector, c [14]float32) float64 {
@@ -31,21 +19,21 @@ func centroidDistance(input Vector, c [14]float32) float64 {
 }
 
 // findNearestClusters compara o input com os centroides de todos os clusters
-// e retorna os indices dos N clusters mais proximos.
-// Essa operacao eh O(k) onde k=1000, muito rapida comparada ao scan de 1M.
-func findNearestClusters(input Vector, n int) []int {
-	// topN mantem os N clusters mais proximos em ordem crescente de distancia.
+// e retorna os indices dos 3 clusters mais proximos.
+// ZERO ALOCACAO: retorna array fixo [3]int ao inves de slice.
+func findNearestClusters(input Vector, n int) [3]int {
 	type clusterDist struct {
 		idx      int
 		distance float64
 	}
-	var topN []clusterDist
+	var topN [3]clusterDist
+	var topNLen int
 
 	for i := range len(clusters) {
 		d := centroidDistance(input, clusters[i].Centroid)
 
-		pos := len(topN)
-		for j := range topN {
+		pos := topNLen
+		for j := 0; j < topNLen; j++ {
 			if d < topN[j].distance {
 				pos = j
 				break
@@ -53,39 +41,35 @@ func findNearestClusters(input Vector, n int) []int {
 		}
 
 		if pos < n {
-			topN = append(topN, clusterDist{})
-			copy(topN[pos+1:], topN[pos:])
+			for j := topNLen; j > pos; j-- {
+				if j < n {
+					topN[j] = topN[j-1]
+				}
+			}
 			topN[pos] = clusterDist{idx: i, distance: d}
-			if len(topN) > n {
-				topN = topN[:n]
+			if topNLen < n {
+				topNLen++
 			}
 		}
 	}
 
-	result := make([]int, len(topN))
-	for i, cd := range topN {
-		result[i] = cd.idx
+	var result [3]int
+	for i := 0; i < topNLen; i++ {
+		result[i] = topN[i].idx
 	}
 	return result
 }
 
 // Detect calcula o score de fraude usando KNN (k=5) com busca em multiplos clusters.
+// Retorna o numero de frauds entre os 5 vizinhos mais proximos (0-5).
 //
 // ESTRATEGIA:
 // 1. Encontra os 3 clusters mais proximos do input comparando com os centroides.
 // 2. Faz scan linear nos registros dos 3 clusters (~150 registros no total).
-// 3. Dos vizinhos encontrados em todos os clusters, pega os 5 mais proximos.
-//
-// Por que 3 clusters:
-// - O vizinho real pode estar em um cluster adjacente, nao necessariamente
-//   no centroide mais proximo. Escannear 3 clusters recupera a maioria da
-//   precisao do scan completo com custo minimo.
-// - Reducao de 1.000.000 para ~150 comparacoes = ~6700x mais rapido.
-func Detect(input Vector) FraudScore {
-	// PASSO 1: Descobre os 3 clusters mais proximos.
+// 3. Retorna a contagem de frauds nos 5 vizinhos mais proximos.
+func Detect(input Vector) int {
 	nearest := findNearestClusters(input, 3)
 
-	// PASSO 2: KNN scan linear nos registros dos 3 clusters combinados.
 	var top [5]Detected
 	var count int
 
@@ -131,7 +115,6 @@ func Detect(input Vector) FraudScore {
 		}
 	}
 
-	// PASSO 3: Classifica baseado nos 5 vizinhos mais proximos dos 3 clusters.
 	fraudCount := 0
 	for i := range count {
 		if top[i].Label == "fraud" {
@@ -139,10 +122,5 @@ func Detect(input Vector) FraudScore {
 		}
 	}
 
-	ratio := float32(fraudCount) / 5.0
-	// Threshold fixo em 0.60 conforme regras da competicao.
-	return FraudScore{
-		Approved:   ratio < float32(0.60),
-		FraudScore: ratio,
-	}
+	return fraudCount
 }

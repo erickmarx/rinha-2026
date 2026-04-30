@@ -7,12 +7,23 @@ import (
 	"time"
 )
 
-const apiLogEnabled = true
+const apiLogEnabled = false
 
 func apiLog(format string, v ...interface{}) {
 	if apiLogEnabled {
 		log.Printf("[API] "+format, v...)
 	}
+}
+
+// fraudScoreResponses pré-computa as 6 respostas JSON possíveis (k=5, threshold=0.60).
+// Elimina completamente a serialização JSON no hot path.
+var fraudScoreResponses = [6][]byte{
+	[]byte(`{"approved":true,"fraud_score":0}`),
+	[]byte(`{"approved":true,"fraud_score":0.2}`),
+	[]byte(`{"approved":true,"fraud_score":0.4}`),
+	[]byte(`{"approved":false,"fraud_score":0.6}`),
+	[]byte(`{"approved":false,"fraud_score":0.8}`),
+	[]byte(`{"approved":false,"fraud_score":1}`),
 }
 
 func Fraudscore(w http.ResponseWriter, r *http.Request) {
@@ -21,8 +32,6 @@ func Fraudscore(w http.ResponseWriter, r *http.Request) {
 	var req Transaction
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		// Se o cliente cancelou a requisicao (timeout, connection reset),
-		// o body vem incompleto e o decoder retorna EOF.
 		if r.Context().Err() != nil {
 			apiLog("WARN cliente cancelou: %v", r.Context().Err())
 		} else {
@@ -40,10 +49,8 @@ func Fraudscore(w http.ResponseWriter, r *http.Request) {
 
 	v := normalize(&req)
 
-	// Mede o tempo do KNN scan. Se demorar mais que 50ms,
-	// loga como WARN — pode ser causa de timeout.
 	detectStart := time.Now()
-	result := Detect(v)
+	fraudCount := Detect(v)
 	detectDuration := time.Since(detectStart)
 	if detectDuration > 50*time.Millisecond {
 		apiLog("WARN Detect() lento: %v", detectDuration)
@@ -51,9 +58,8 @@ func Fraudscore(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(result)
+	w.Write(fraudScoreResponses[fraudCount])
 
-	// Só loga se o total da requisicao foi lento (> 100ms).
 	if total := time.Since(start); total > 100*time.Millisecond {
 		apiLog("WARN requisicao lenta: %v", total)
 	}
