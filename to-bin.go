@@ -7,24 +7,21 @@ import (
 	"math"
 	"math/rand"
 	"os"
+	"sort"
 	"time"
 )
 
-// RegistroJSON representa um registro lido do arquivo JSON de referencias.
 type RegistroJSON struct {
 	Vector []float32 `json:"vector"`
 	Label  string    `json:"label"`
 }
 
-// Point representa um ponto no espaco 14D com seu label.
 type Point struct {
 	Vector [14]float32
 	Label  uint32
+	OrigID uint32
 }
 
-// KMeans implementa o algoritmo de Lloyd para clustering.
-// Roda OFFLINE (no to-bin.go), entao performance nao eh critica —
-// precisamos de corretude e uma boa divisao dos dados.
 type KMeans struct {
 	Points      []Point
 	Centroids   [][14]float64
@@ -32,8 +29,6 @@ type KMeans struct {
 	K           int
 }
 
-// NewKMeans inicializa o k-means com k clusters.
-// Os centroides iniciais sao amostrados aleatoriamente do proprio dataset.
 func NewKMeans(points []Point, k int) *KMeans {
 	km := &KMeans{
 		Points:      points,
@@ -41,9 +36,6 @@ func NewKMeans(points []Point, k int) *KMeans {
 		Assignments: make([]int, len(points)),
 		K:           k,
 	}
-
-	// Semente fixa para geracao deterministica: toda execucao gera
-	// os mesmos clusters, garantindo reprodutibilidade entre builds.
 	rand.Seed(42)
 	for i := 0; i < k; i++ {
 		idx := rand.Intn(len(points))
@@ -51,11 +43,9 @@ func NewKMeans(points []Point, k int) *KMeans {
 			km.Centroids[i][j] = float64(points[idx].Vector[j])
 		}
 	}
-
 	return km
 }
 
-// distanceSquared calcula a distancia euclidiana ao quadrado.
 func distanceSquared(p Point, c [14]float64) float64 {
 	var sum float64
 	for i := 0; i < 14; i++ {
@@ -65,13 +55,11 @@ func distanceSquared(p Point, c [14]float64) float64 {
 	return sum
 }
 
-// Run executa o algoritmo de Lloyd por no maximo maxIter iteracoes.
 func (km *KMeans) Run(maxIter int) {
 	for iter := 0; iter < maxIter; iter++ {
 		changed := 0
 		iterStart := time.Now()
 
-		// PASSO 1: Atribuir cada ponto ao centroide mais proximo.
 		for i, p := range km.Points {
 			bestCluster := 0
 			bestDist := distanceSquared(p, km.Centroids[0])
@@ -90,7 +78,6 @@ func (km *KMeans) Run(maxIter int) {
 			}
 		}
 
-		// Se nenhum ponto mudou de cluster, convergiu.
 		if changed == 0 {
 			fmt.Printf("[K-Means] Iteracao %d/%d: convergiu (%v)\n", iter+1, maxIter, time.Since(iterStart))
 			break
@@ -99,7 +86,6 @@ func (km *KMeans) Run(maxIter int) {
 		fmt.Printf("[K-Means] Iteracao %d/%d: %d pontos mudaram de cluster (%v)\n",
 			iter+1, maxIter, changed, time.Since(iterStart))
 
-		// PASSO 2: Recalcular centroides como media dos pontos atribuidos.
 		newCentroids := make([][14]float64, km.K)
 		counts := make([]int, km.K)
 
@@ -121,13 +107,11 @@ func (km *KMeans) Run(maxIter int) {
 	}
 }
 
-// ClusterResult contem os pontos reorganizados por cluster e os tamanhos.
 type ClusterResult struct {
 	Points []Point
 	Sizes  []int
 }
 
-// Reorganize agrupa os pontos por cluster para escrita sequencial no binario.
 func (km *KMeans) Reorganize() ClusterResult {
 	sizes := make([]int, km.K)
 	for _, c := range km.Assignments {
@@ -160,7 +144,6 @@ func main() {
 }
 
 func bin() {
-	// 1. Le o JSON de referencias.
 	content, err := os.ReadFile("references.json")
 	if err != nil {
 		fmt.Println("Erro ao ler JSON:", err)
@@ -171,7 +154,6 @@ func bin() {
 	json.Unmarshal(content, &registrosJSON)
 	fmt.Printf("Carregados %d registros do JSON\n", len(registrosJSON))
 
-	// Converte para o tipo Point.
 	points := make([]Point, len(registrosJSON))
 	for i, r := range registrosJSON {
 		for j := 0; j < 14; j++ {
@@ -182,12 +164,11 @@ func bin() {
 		} else {
 			points[i].Label = 0
 		}
+		points[i].OrigID = uint32(i)
 	}
 	fmt.Printf("Convertidos %d registros para formato interno\n", len(points))
 
-	// 2. Executa K-Means com k=1000 clusters.
-	// Clusters grandes (~1000 registros cada) — teste de baseline.
-	const k = 1000
+	const k = 256
 	fmt.Printf("Iniciando K-Means com k=%d...\n", k)
 	start := time.Now()
 
@@ -198,21 +179,32 @@ func bin() {
 	result := km.Reorganize()
 	fmt.Printf("[K-Means] Concluido em %v\n", time.Since(start))
 
-	// Estatisticas dos clusters.
-	minSize, maxSize := math.MaxInt64, 0
-	total := 0
-	for _, s := range result.Sizes {
-		if s < minSize {
-			minSize = s
+	// Calcular bounding boxes
+	bboxMin := make([][14]float32, k)
+	bboxMax := make([][14]float32, k)
+	for i := 0; i < k; i++ {
+		for j := 0; j < 14; j++ {
+			bboxMin[i][j] = math.MaxFloat32
+			bboxMax[i][j] = -math.MaxFloat32
 		}
-		if s > maxSize {
-			maxSize = s
-		}
-		total += s
 	}
-	fmt.Printf("Clusters: min=%d, max=%d, media=%d\n", minSize, maxSize, total/k)
 
-	// 3. Escreve o arquivo binario no novo formato.
+	idx := 0
+	for i := 0; i < k; i++ {
+		for r := 0; r < result.Sizes[i]; r++ {
+			p := result.Points[idx]
+			for j := 0; j < 14; j++ {
+				if p.Vector[j] < bboxMin[i][j] {
+					bboxMin[i][j] = p.Vector[j]
+				}
+				if p.Vector[j] > bboxMax[i][j] {
+					bboxMax[i][j] = p.Vector[j]
+				}
+			}
+			idx++
+		}
+	}
+
 	fmt.Println("[K-Means] Escrevendo dataset.bin...")
 	binFile, err := os.Create("dataset.bin")
 	if err != nil {
@@ -221,28 +213,41 @@ func bin() {
 	}
 	defer binFile.Close()
 
-	// Header: k, n
+	n := uint32(len(points))
 	binary.Write(binFile, binary.LittleEndian, uint32(k))
-	binary.Write(binFile, binary.LittleEndian, uint32(len(points)))
+	binary.Write(binFile, binary.LittleEndian, n)
 
-	// Centroides: k x 14 floats
+	// Centroides
 	for i := 0; i < k; i++ {
 		for j := 0; j < 14; j++ {
 			binary.Write(binFile, binary.LittleEndian, float32(km.Centroids[i][j]))
 		}
 	}
 
-	// Tamanhos dos clusters: k x uint32
+	// Bounding boxes
+	for i := 0; i < k; i++ {
+		for j := 0; j < 14; j++ {
+			binary.Write(binFile, binary.LittleEndian, bboxMin[i][j])
+		}
+	}
+	for i := 0; i < k; i++ {
+		for j := 0; j < 14; j++ {
+			binary.Write(binFile, binary.LittleEndian, bboxMax[i][j])
+		}
+	}
+
+	// Tamanhos
 	for i := 0; i < k; i++ {
 		binary.Write(binFile, binary.LittleEndian, uint32(result.Sizes[i]))
 	}
 
-	// Registros agrupados por cluster
+	// Registros
 	for _, p := range result.Points {
 		for j := 0; j < 14; j++ {
 			binary.Write(binFile, binary.LittleEndian, p.Vector[j])
 		}
 		binary.Write(binFile, binary.LittleEndian, p.Label)
+		binary.Write(binFile, binary.LittleEndian, p.OrigID)
 	}
 
 	binFile.Sync()

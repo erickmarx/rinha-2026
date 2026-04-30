@@ -11,10 +11,13 @@ import (
 type Registry struct {
 	Vector [14]float32
 	Label  uint32
+	OrigID uint32
 }
 
 type Cluster struct {
 	Centroid [14]float32
+	BboxMin  [14]float32
+	BboxMax  [14]float32
 	Data     []Registry
 }
 
@@ -39,12 +42,11 @@ func Mmap(f *os.File) bool {
 func RegisterBinary(bin []byte) {
 	syscall.Madvise(bin, syscall.MADV_WILLNEED)
 
-	// Le o header: k (clusters), n (registros)
 	k := binary.LittleEndian.Uint32(bin[0:])
 	n := binary.LittleEndian.Uint32(bin[4:])
 	totalRegs = int(n)
 
-	// Le os k centroides
+	// Centroides
 	centroids := make([][14]float32, k)
 	for i := uint32(0); i < k; i++ {
 		off := 8 + int(i)*56
@@ -53,38 +55,53 @@ func RegisterBinary(bin []byte) {
 		}
 	}
 
-	// Le os k tamanhos
-	sizes := make([]uint32, k)
+	// BboxMin
+	bboxMin := make([][14]float32, k)
+	offset := 8 + int(k)*56
 	for i := uint32(0); i < k; i++ {
-		off := 8 + int(k)*56 + int(i)*4
-		sizes[i] = binary.LittleEndian.Uint32(bin[off:])
+		off := offset + int(i)*56
+		for j := 0; j < 14; j++ {
+			bboxMin[i][j] = math.Float32frombits(binary.LittleEndian.Uint32(bin[off+j*4:]))
+		}
 	}
 
-	// Os registros comecam apos os tamanhos
-	dataOffset := 8 + int(k)*56 + int(k)*4
-	dataPtr := unsafe.Pointer(&bin[dataOffset])
+	// BboxMax
+	bboxMax := make([][14]float32, k)
+	offset += int(k) * 56
+	for i := uint32(0); i < k; i++ {
+		off := offset + int(i)*56
+		for j := 0; j < 14; j++ {
+			bboxMax[i][j] = math.Float32frombits(binary.LittleEndian.Uint32(bin[off+j*4:]))
+		}
+	}
 
-	// Cria slice de Registry apontando diretamente para o mmap.
-	// Registry tem alignment 4; dataOffset eh garantido multiplo de 4
-	// porque 56 e 4 sao multiplos de 4.
+	// Sizes
+	sizes := make([]uint32, k)
+	offset += int(k) * 56
+	for i := uint32(0); i < k; i++ {
+		sizes[i] = binary.LittleEndian.Uint32(bin[offset+int(i)*4:])
+	}
+
+	// Registros
+	dataOffset := offset + int(k)*4
+	dataPtr := unsafe.Pointer(&bin[dataOffset])
 	allData := unsafe.Slice((*Registry)(dataPtr), int(n))
 
-	// Cria os clusters
+	// Warm-up
+	for i := range allData {
+		_ = allData[i].Label
+	}
+
 	clusters = make([]Cluster, k)
 	idx := 0
 	for i := 0; i < int(k); i++ {
 		size := int(sizes[i])
 		clusters[i] = Cluster{
 			Centroid: centroids[i],
+			BboxMin:  bboxMin[i],
+			BboxMax:  bboxMax[i],
 			Data:     allData[idx : idx+size],
 		}
 		idx += size
-	}
-
-	// Warm-up: toca todos os registros para forcar page faults no startup.
-	for _, c := range clusters {
-		for i := range len(c.Data) {
-			_ = c.Data[i].Label
-		}
 	}
 }
