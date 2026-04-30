@@ -2,10 +2,10 @@ package main
 
 import (
 	"context"
-	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"strings"
@@ -20,12 +20,7 @@ func lbLog(format string, v ...interface{}) {
 	}
 }
 
-type backend struct {
-	target *url.URL
-	client *http.Client
-}
-
-var backends []backend
+var proxies []*httputil.ReverseProxy
 var idx atomic.Uint64
 
 func main() {
@@ -38,66 +33,51 @@ func main() {
 		s = strings.TrimSpace(s)
 		if strings.HasPrefix(s, "unix://") {
 			path := strings.TrimPrefix(s, "unix://")
-			client := &http.Client{
-				Transport: &http.Transport{
-					DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-						return net.Dial("unix", path)
-					},
-					MaxIdleConns:        100,
-					MaxIdleConnsPerHost: 100,
-					DisableCompression:  true,
+			transport := &http.Transport{
+				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+					return net.Dial("unix", path)
+				},
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 100,
+				DisableCompression:  true,
+			}
+			proxy := &httputil.ReverseProxy{
+				Transport: transport,
+				Director: func(req *http.Request) {
+					req.URL.Scheme = "http"
+					req.URL.Host = "localhost"
+					req.Host = "localhost"
+				},
+				ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+					lbLog("ERRO UDS %s %s: %v", r.Method, r.URL.Path, err)
+					http.Error(w, "Bad Gateway", http.StatusBadGateway)
 				},
 			}
-			backends = append(backends, backend{
-				target: &url.URL{Scheme: "http", Host: "localhost"},
-				client: client,
-			})
+			proxies = append(proxies, proxy)
 		} else {
 			u, err := url.Parse(s)
 			if err != nil {
 				panic(err)
 			}
-			client := &http.Client{
-				Transport: &http.Transport{
-					MaxIdleConns:        100,
-					MaxIdleConnsPerHost: 100,
-					DisableCompression:  true,
-				},
+			proxy := httputil.NewSingleHostReverseProxy(u)
+			proxy.Transport = &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 100,
+				DisableCompression:  true,
 			}
-			backends = append(backends, backend{
-				target: u,
-				client: client,
-			})
+			proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+				lbLog("ERRO TCP %s %s -> %s: %v", r.Method, r.URL.Path, u.Host, err)
+				http.Error(w, "Bad Gateway", http.StatusBadGateway)
+			}
+			proxies = append(proxies, proxy)
 		}
 	}
 
-	lbLog("Iniciado com %d backend(s): %v", len(backends), raw)
+	lbLog("Iniciado com %d backend(s): %v", len(proxies), raw)
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		i := int(idx.Add(1)-1) % len(backends)
-		b := backends[i]
-
-		req := new(http.Request)
-		*req = *r
-		req.URL = b.target.ResolveReference(r.URL)
-		req.RequestURI = ""
-		req.Host = b.target.Host
-
-		resp, err := b.client.Do(req)
-		if err != nil {
-			lbLog("ERRO ao encaminhar %s %s -> %s: %v", r.Method, r.URL.Path, b.target.Host, err)
-			http.Error(w, "Bad Gateway", http.StatusBadGateway)
-			return
-		}
-		defer resp.Body.Close()
-
-		for k, vv := range resp.Header {
-			for _, v := range vv {
-				w.Header().Add(k, v)
-			}
-		}
-		w.WriteHeader(resp.StatusCode)
-		io.Copy(w, resp.Body)
+		i := int(idx.Add(1)-1) % len(proxies)
+		proxies[i].ServeHTTP(w, r)
 	})
 
 	lbLog("Escutando na porta 8080")
