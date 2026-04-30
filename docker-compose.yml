@@ -3,14 +3,13 @@
 # HARDWARE ALVO: 1 CPU e 350 MB de memoria TOTAIS (uso 100%).
 #
 # Divisao de CPU:
-# - 4 APIs: 0.12 CPU cada (juntas usam 0.48)
-#   Margem de seguranca: usam ~5% do allocado (~0.006 CPU real).
-# - LB: 0.52 CPU
+# - 2 APIs: 0.40 CPU cada (juntas usam 0.80)
+# - LB: 0.20 CPU
 # - Total: 1.0 CPU
 #
 # Divisao de memoria:
-# - 4 APIs: 60M cada = 240M
-# - LB: 110M
+# - 2 APIs: 150M cada = 300M
+# - LB: 50M
 # - Total: 350M, zero sobra.
 
 x-api-base: &api-base
@@ -26,8 +25,8 @@ x-api-base: &api-base
   deploy:
     resources:
       limits:
-        cpus: "0.24"
-        memory: 120M
+        cpus: "0.40"
+        memory: 150M
   networks:
     - rinha-net
   volumes:
@@ -54,7 +53,7 @@ services:
       context: ./haproxy
       dockerfile: Dockerfile
     ports:
-      - "9999:8080"
+      - "9999:9999"
     restart: unless-stopped
     depends_on:
       - api1
@@ -62,7 +61,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.52"
+          cpus: "0.20"
           memory: 50M
     networks:
       - rinha-net
