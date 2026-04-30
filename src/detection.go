@@ -72,20 +72,20 @@ func findNearestClusters(input Vector, n int) []int {
 // Detect calcula o score de fraude usando KNN (k=5) com busca em multiplos clusters.
 //
 // ESTRATEGIA:
-// 1. Encontra os 5 clusters mais proximos do input comparando com os centroides.
-// 2. Faz scan linear nos registros dos 5 clusters (~250 registros no total).
+// 1. Encontra os 3 clusters mais proximos do input comparando com os centroides.
+// 2. Faz scan linear nos registros dos 3 clusters (~150 registros no total).
 // 3. Dos vizinhos encontrados em todos os clusters, pega os 5 mais proximos.
 //
-// Por que 5 clusters:
+// Por que 3 clusters:
 // - O vizinho real pode estar em um cluster adjacente, nao necessariamente
-//   no centroide mais proximo. Escannear 5 clusters recupera mais da
-//   precisao do scan completo com custo ainda baixo.
-// - Reducao de 1.000.000 para ~250 comparacoes = ~4000x mais rapido.
+//   no centroide mais proximo. Escannear 3 clusters recupera a maioria da
+//   precisao do scan completo com custo minimo.
+// - Reducao de 1.000.000 para ~150 comparacoes = ~6700x mais rapido.
 func Detect(input Vector) FraudScore {
-	// PASSO 1: Descobre os 5 clusters mais proximos.
-	nearest := findNearestClusters(input, 5)
+	// PASSO 1: Descobre os 3 clusters mais proximos.
+	nearest := findNearestClusters(input, 3)
 
-	// PASSO 2: KNN scan linear nos registros dos 5 clusters combinados.
+	// PASSO 2: KNN scan linear nos registros dos 3 clusters combinados.
 	var top [5]Detected
 	var count int
 
