@@ -120,15 +120,17 @@ func quantizeInput(v float64) int16 {
 func Detect(input Vector) int {
 	// Quantiza query para int16 uma unica vez.
 	var q [14]int16
+	var qGrid [14]float64
 	for i := 0; i < 14; i++ {
 		q[i] = quantizeInput(input[i])
+		qGrid[i] = float64(q[i]) / fixScale
 	}
 
-	// PASSO 1: Encontra o cluster mais proximo.
+	// PASSO 1: Encontra o cluster mais proximo usando qGrid (igual ao C).
 	bestCluster := 0
-	bestDist := centroidDistance(input, clusters[0].Centroid)
+	bestDist := centroidDistance(qGrid, clusters[0].Centroid)
 	for i := 1; i < len(clusters); i++ {
-		d := centroidDistance(input, clusters[i].Centroid)
+		d := centroidDistance(qGrid, clusters[i].Centroid)
 		if d < bestDist {
 			bestDist = d
 			bestCluster = i

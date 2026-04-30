@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"math/rand"
 	"os"
 	"time"
 )
@@ -23,132 +22,109 @@ type Point struct {
 	OrigID uint32
 }
 
-type KMeans struct {
-	Points      []Point
-	Centroids   [][14]float64
-	Assignments []int
-	K           int
+func clampFloat32(v float32) float32 {
+	if v < -1.0 {
+		return -1.0
+	}
+	if v > 1.0 {
+		return 1.0
+	}
+	return v
 }
 
-func NewKMeans(points []Point, k int) *KMeans {
-	km := &KMeans{
-		Points:      points,
-		Centroids:   make([][14]float64, k),
-		Assignments: make([]int, len(points)),
-		K:           k,
-	}
-	rand.Seed(42)
-	for i := 0; i < k; i++ {
-		idx := rand.Intn(len(points))
+func nearestCentroid(p Point, centroids [][14]float64) int {
+	best := 0
+	bestDist := math.MaxFloat64
+	for c := range centroids {
+		var d float64
 		for j := 0; j < 14; j++ {
-			km.Centroids[i][j] = float64(points[idx].Vector[j])
+			diff := float64(p.Vector[j]) - centroids[c][j]
+			d += diff * diff
+		}
+		if d < bestDist {
+			bestDist = d
+			best = c
 		}
 	}
-	return km
+	return best
 }
 
-func distanceSquared(p Point, c [14]float64) float64 {
-	var sum float64
-	for i := 0; i < 14; i++ {
-		diff := float64(p.Vector[i]) - c[i]
-		sum += diff * diff
+func trainKMeans(points []Point, k int, sampleN int, iters int) [][14]float64 {
+	n := len(points)
+	if sampleN > n {
+		sampleN = n
 	}
-	return sum
-}
 
-func (km *KMeans) Run(maxIter int) {
-	for iter := 0; iter < maxIter; iter++ {
-		changed := 0
-		iterStart := time.Now()
+	// Amostra regular (igual ao C)
+	sample := make([]int, sampleN)
+	for i := 0; i < sampleN; i++ {
+		sample[i] = int((uint64(i) * uint64(n)) / uint64(sampleN))
+	}
 
-		for i, p := range km.Points {
-			bestCluster := 0
-			bestDist := distanceSquared(p, km.Centroids[0])
+	// Inicializa centroides a partir da amostra regular
+	centroids := make([][14]float64, k)
+	for c := 0; c < k; c++ {
+		si := int((uint64(c) * uint64(sampleN)) / uint64(k))
+		if si >= sampleN {
+			si = sampleN - 1
+		}
+		idx := sample[si]
+		for j := 0; j < 14; j++ {
+			centroids[c][j] = float64(points[idx].Vector[j])
+		}
+	}
 
-			for j := 1; j < km.K; j++ {
-				d := distanceSquared(p, km.Centroids[j])
-				if d < bestDist {
-					bestDist = d
-					bestCluster = j
-				}
-			}
+	sums := make([][14]float64, k)
+	counts := make([]int, k)
 
-			if km.Assignments[i] != bestCluster {
-				km.Assignments[i] = bestCluster
-				changed++
+	for it := 0; it < iters; it++ {
+		for c := 0; c < k; c++ {
+			counts[c] = 0
+			for j := 0; j < 14; j++ {
+				sums[c][j] = 0
 			}
 		}
 
-		if changed == 0 {
-			fmt.Printf("[K-Means] Iteracao %d/%d: convergiu (%v)\n", iter+1, maxIter, time.Since(iterStart))
-			break
-		}
-
-		fmt.Printf("[K-Means] Iteracao %d/%d: %d pontos mudaram de cluster (%v)\n",
-			iter+1, maxIter, changed, time.Since(iterStart))
-
-		newCentroids := make([][14]float64, km.K)
-		counts := make([]int, km.K)
-
-		for i, p := range km.Points {
-			c := km.Assignments[i]
+		for _, idx := range sample {
+			p := points[idx]
+			c := nearestCentroid(p, centroids)
 			counts[c]++
 			for j := 0; j < 14; j++ {
-				newCentroids[c][j] += float64(p.Vector[j])
+				sums[c][j] += float64(p.Vector[j])
 			}
 		}
 
-		for i := 0; i < km.K; i++ {
-			if counts[i] > 0 {
-				for j := 0; j < 14; j++ {
-					km.Centroids[i][j] = newCentroids[i][j] / float64(counts[i])
-				}
+		empty := 0
+		for c := 0; c < k; c++ {
+			if counts[c] == 0 {
+				empty++
+				continue
+			}
+			inv := 1.0 / float64(counts[c])
+			for j := 0; j < 14; j++ {
+				centroids[c][j] = sums[c][j] * inv
 			}
 		}
-	}
-}
-
-type ClusterResult struct {
-	Points []Point
-	Sizes  []int
-}
-
-func (km *KMeans) Reorganize() ClusterResult {
-	sizes := make([]int, km.K)
-	for _, c := range km.Assignments {
-		sizes[c]++
+		fmt.Printf("[K-Means] Iter %d/%d sample=%d empty=%d\n", it+1, iters, sampleN, empty)
 	}
 
-	clusters := make([][]Point, km.K)
-	for i := 0; i < km.K; i++ {
-		clusters[i] = make([]Point, 0, sizes[i])
-	}
-
-	for i, p := range km.Points {
-		c := km.Assignments[i]
-		clusters[c] = append(clusters[c], p)
-	}
-
-	var allPoints []Point
-	for i := 0; i < km.K; i++ {
-		allPoints = append(allPoints, clusters[i]...)
-	}
-
-	return ClusterResult{
-		Points: allPoints,
-		Sizes:  sizes,
-	}
+	return centroids
 }
 
 func quantize(v float32) int16 {
-	x := float64(v) * fixScale
-	if x > 32767.0 {
-		return 32767
+	x := float64(clampFloat32(v)) * fixScale
+	if x >= 0 {
+		x += 0.5
+	} else {
+		x -= 0.5
 	}
-	if x < -32768.0 {
-		return -32768
+	if x > 10000.0 {
+		x = 10000.0
 	}
-	return int16(math.Round(x))
+	if x < -10000.0 {
+		x = -10000.0
+	}
+	return int16(x)
 }
 
 func main() {
@@ -181,15 +157,39 @@ func bin() {
 	fmt.Printf("Convertidos %d registros para formato interno\n", len(points))
 
 	const k = 256
-	fmt.Printf("Iniciando K-Means com k=%d...\n", k)
+	const sampleN = 131072
+	const iters = 10
+
+	fmt.Printf("Iniciando K-Means com k=%d sample=%d iters=%d...\n", k, sampleN, iters)
 	start := time.Now()
 
-	km := NewKMeans(points, k)
-	km.Run(20)
+	centroids := trainKMeans(points, k, sampleN, iters)
+
+	fmt.Println("[K-Means] Atribuindo todos os pontos aos clusters...")
+	assignments := make([]int, len(points))
+	for i, p := range points {
+		assignments[i] = nearestCentroid(p, centroids)
+	}
 
 	fmt.Println("[K-Means] Reorganizando registros por cluster...")
-	result := km.Reorganize()
-	fmt.Printf("[K-Means] Concluido em %v\n", time.Since(start))
+	sizes := make([]int, k)
+	for _, c := range assignments {
+		sizes[c]++
+	}
+
+	clusters := make([][]Point, k)
+	for i := 0; i < k; i++ {
+		clusters[i] = make([]Point, 0, sizes[i])
+	}
+	for i, p := range points {
+		c := assignments[i]
+		clusters[c] = append(clusters[c], p)
+	}
+
+	var allPoints []Point
+	for i := 0; i < k; i++ {
+		allPoints = append(allPoints, clusters[i]...)
+	}
 
 	n := len(points)
 
@@ -206,8 +206,8 @@ func bin() {
 	quantized := make([][14]int16, n)
 	idx := 0
 	for i := 0; i < k; i++ {
-		for r := 0; r < result.Sizes[i]; r++ {
-			p := result.Points[idx]
+		for r := 0; r < sizes[i]; r++ {
+			p := allPoints[idx]
 			for j := 0; j < 14; j++ {
 				qv := quantize(p.Vector[j])
 				quantized[idx][j] = qv
@@ -221,6 +221,8 @@ func bin() {
 			idx++
 		}
 	}
+
+	fmt.Printf("[K-Means] Concluido em %v\n", time.Since(start))
 
 	fmt.Println("[K-Means] Escrevendo dataset.bin...")
 	binFile, err := os.Create("dataset.bin")
@@ -240,7 +242,7 @@ func bin() {
 	// Centroids
 	for i := 0; i < k; i++ {
 		for j := 0; j < 14; j++ {
-			binary.Write(binFile, binary.LittleEndian, float32(km.Centroids[i][j]))
+			binary.Write(binFile, binary.LittleEndian, float32(centroids[i][j]))
 		}
 	}
 
@@ -262,27 +264,27 @@ func bin() {
 	offsets := make([]uint32, k+1)
 	offsets[0] = 0
 	for i := 0; i < k; i++ {
-		offsets[i+1] = offsets[i] + uint32(result.Sizes[i])
+		offsets[i+1] = offsets[i] + uint32(sizes[i])
 	}
 	for i := 0; i <= k; i++ {
 		binary.Write(binFile, binary.LittleEndian, offsets[i])
 	}
 
-	// Dims SoA (int16) — permite early termination no scan
+	// Dims SoA (int16)
 	for j := 0; j < 14; j++ {
 		for i := 0; i < n; i++ {
 			binary.Write(binFile, binary.LittleEndian, quantized[i][j])
 		}
 	}
 
-	// OrigIDs (antes de labels para alinhamento a 4 bytes)
+	// OrigIDs
 	for i := 0; i < n; i++ {
-		binary.Write(binFile, binary.LittleEndian, result.Points[i].OrigID)
+		binary.Write(binFile, binary.LittleEndian, allPoints[i].OrigID)
 	}
 
 	// Labels
 	for i := 0; i < n; i++ {
-		binary.Write(binFile, binary.LittleEndian, uint8(result.Points[i].Label))
+		binary.Write(binFile, binary.LittleEndian, uint8(allPoints[i].Label))
 	}
 
 	binFile.Sync()
