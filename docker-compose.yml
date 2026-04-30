@@ -30,13 +30,23 @@ x-api-base: &api-base
         memory: 120M
   networks:
     - rinha-net
+  volumes:
+    - sockets:/sockets
 
 services:
   api1:
     <<: *api-base
+    environment:
+      - UDS_PATH=/sockets/api1.sock
+      - GOMAXPROCS=1
+      - GOMEMLIMIT=48MiB
 
   api2:
     <<: *api-base
+    environment:
+      - UDS_PATH=/sockets/api2.sock
+      - GOMAXPROCS=1
+      - GOMEMLIMIT=48MiB
 
   lb:
     image: sua-org/seu-lb:latest
@@ -44,7 +54,7 @@ services:
       context: ./lb
       dockerfile: Dockerfile
     environment:
-      - BACKENDS=http://api1:8080,http://api2:8080
+      - BACKENDS=unix:///sockets/api1.sock,unix:///sockets/api2.sock
       - LB_LOG=false
       - GOMAXPROCS=1
     ports:
@@ -60,6 +70,11 @@ services:
           memory: 110M
     networks:
       - rinha-net
+    volumes:
+      - sockets:/sockets
+
+volumes:
+  sockets:
 
 networks:
   rinha-net:

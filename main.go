@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"rinha-backend/src"
@@ -30,9 +31,28 @@ func main() {
 
 	defer f.Close()
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
+	udsPath := os.Getenv("UDS_PATH")
+	var listener net.Listener
+	if udsPath != "" {
+		os.Remove(udsPath)
+		l, err := net.Listen("unix", udsPath)
+		if err != nil {
+			panic(err)
+		}
+		listener = l
+		os.Chmod(udsPath, 0666)
+		fmt.Printf("Servidor escutando em Unix socket %s...\n", udsPath)
+	} else {
+		port := os.Getenv("PORT")
+		if port == "" {
+			port = "8080"
+		}
+		l, err := net.Listen("tcp", ":"+port)
+		if err != nil {
+			panic(err)
+		}
+		listener = l
+		fmt.Printf("Servidor escutando na porta %s...\n", port)
 	}
 
 	go func() {
@@ -45,8 +65,7 @@ func main() {
 		}
 	}()
 
-	fmt.Printf("Servidor escutando na porta %s...\n", port)
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
+	if err := http.Serve(listener, mux); err != nil {
 		panic(err)
 	}
 }

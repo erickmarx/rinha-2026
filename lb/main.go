@@ -1,18 +1,17 @@
 package main
 
 import (
+	"context"
+	"io"
 	"log"
+	"net"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"os"
 	"strings"
 	"sync/atomic"
 )
 
-// lbLogEnabled controla se o LB imprime logs.
-// Em producao, mantenha false. Em desenvolvimento, true para debugar.
-// Como eh constante, o compilador Go elimina o codigo morto quando false.
 const lbLogEnabled = false
 
 func lbLog(format string, v ...interface{}) {
@@ -21,7 +20,12 @@ func lbLog(format string, v ...interface{}) {
 	}
 }
 
-var backends []*url.URL
+type backend struct {
+	target *url.URL
+	client *http.Client
+}
+
+var backends []backend
 var idx atomic.Uint64
 
 func main() {
@@ -31,39 +35,71 @@ func main() {
 	}
 
 	for _, s := range strings.Split(raw, ",") {
-		u, err := url.Parse(s)
-		if err != nil {
-			panic(err)
+		s = strings.TrimSpace(s)
+		if strings.HasPrefix(s, "unix://") {
+			path := strings.TrimPrefix(s, "unix://")
+			client := &http.Client{
+				Transport: &http.Transport{
+					DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+						return net.Dial("unix", path)
+					},
+					MaxIdleConns:        100,
+					MaxIdleConnsPerHost: 100,
+					DisableCompression:  true,
+				},
+			}
+			backends = append(backends, backend{
+				target: &url.URL{Scheme: "http", Host: "localhost"},
+				client: client,
+			})
+		} else {
+			u, err := url.Parse(s)
+			if err != nil {
+				panic(err)
+			}
+			client := &http.Client{
+				Transport: &http.Transport{
+					MaxIdleConns:        100,
+					MaxIdleConnsPerHost: 100,
+					DisableCompression:  true,
+				},
+			}
+			backends = append(backends, backend{
+				target: u,
+				client: client,
+			})
 		}
-		backends = append(backends, u)
 	}
 
 	lbLog("Iniciado com %d backend(s): %v", len(backends), raw)
 
-	// Transport com keep-alive reabilitado. Sem keep-alive, cada requisicao
-	// abre uma nova conexao TCP (handshake + FIN), o que mata a CPU do LB
-	// em alta carga. Com keep-alive, conexoes sao reutilizadas.
-	transport := &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 100,
-		DisableCompression:  true,
-	}
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		i := int(idx.Add(1)-1) % len(backends)
+		b := backends[i]
 
-	proxy := httputil.ReverseProxy{
-		Transport: transport,
-		Director: func(req *http.Request) {
-			i := int(idx.Add(1)-1) % len(backends)
-			target := backends[i]
-			req.URL.Scheme = target.Scheme
-			req.URL.Host = target.Host
-			req.Host = target.Host
-		},
-		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			lbLog("ERRO ao encaminhar %s %s -> %s: %v", r.Method, r.URL.Path, r.Host, err)
+		req := new(http.Request)
+		*req = *r
+		req.URL = b.target.ResolveReference(r.URL)
+		req.RequestURI = ""
+		req.Host = b.target.Host
+
+		resp, err := b.client.Do(req)
+		if err != nil {
+			lbLog("ERRO ao encaminhar %s %s -> %s: %v", r.Method, r.URL.Path, b.target.Host, err)
 			http.Error(w, "Bad Gateway", http.StatusBadGateway)
-		},
-	}
+			return
+		}
+		defer resp.Body.Close()
+
+		for k, vv := range resp.Header {
+			for _, v := range vv {
+				w.Header().Add(k, v)
+			}
+		}
+		w.WriteHeader(resp.StatusCode)
+		io.Copy(w, resp.Body)
+	})
 
 	lbLog("Escutando na porta 8080")
-	http.ListenAndServe(":8080", &proxy)
+	http.ListenAndServe(":8080", nil)
 }
