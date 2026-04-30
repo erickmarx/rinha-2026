@@ -71,15 +71,33 @@ func knnInsert(top *[5]Detected, count *int, k int, dist float64, label string, 
 }
 
 // scanCluster escaneia todos os registros de um cluster.
-func scanCluster(input Vector, clusterIdx int, top *[5]Detected, count *int, worstDist *float64) {
+// OPTIMIZADO: loop unrolled nas 14 dims + input pre-convertido para float32.
+func scanCluster(input32 *[14]float32, clusterIdx int, top *[5]Detected, count *int, worstDist *float64) {
 	data := clusters[clusterIdx].Data
 	for i := range len(data) {
 		reg := &data[i]
-		var sum float32
-		for j := range 14 {
-			diff := float32(input[j]) - reg.Vector[j]
-			sum += diff * diff
-		}
+
+		// Loop unrolled: 14 dimensoes, sem bounds checking
+		d0 := input32[0] - reg.Vector[0]
+		d1 := input32[1] - reg.Vector[1]
+		d2 := input32[2] - reg.Vector[2]
+		d3 := input32[3] - reg.Vector[3]
+		d4 := input32[4] - reg.Vector[4]
+		d5 := input32[5] - reg.Vector[5]
+		d6 := input32[6] - reg.Vector[6]
+		d7 := input32[7] - reg.Vector[7]
+		d8 := input32[8] - reg.Vector[8]
+		d9 := input32[9] - reg.Vector[9]
+		d10 := input32[10] - reg.Vector[10]
+		d11 := input32[11] - reg.Vector[11]
+		d12 := input32[12] - reg.Vector[12]
+		d13 := input32[13] - reg.Vector[13]
+
+		sum := d0*d0 + d1*d1 + d2*d2 + d3*d3 +
+			d4*d4 + d5*d5 + d6*d6 + d7*d7 +
+			d8*d8 + d9*d9 + d10*d10 + d11*d11 +
+			d12*d12 + d13*d13
+
 		label := "fraud"
 		if reg.Label == 1 {
 			label = "legit"
@@ -89,15 +107,14 @@ func scanCluster(input Vector, clusterIdx int, top *[5]Detected, count *int, wor
 }
 
 // Detect calcula o score de fraude usando IVF com bounding-box repair limitado.
-//
-// ESTRATEGIA:
-// 1. Escolhe os 3 clusters mais proximos (nprobe=3).
-// 2. Escaneia os clusters iniciais.
-// 3. Se ainda nao tem 5 vizinhos, faz repair limitado: ordena os clusters
-//    restantes por lower_bound e escaneia os 20 mais promissores.
-// 4. Retorna a contagem de frauds nos 5 vizinhos mais proximos.
 func Detect(input Vector) int {
-	// PASSO 1: Encontra os 3 clusters mais proximos.
+	// PRE-CONVERSAO: float64 -> float32 uma unica vez.
+	var input32 [14]float32
+	for i := 0; i < 14; i++ {
+		input32[i] = float32(input[i])
+	}
+
+	// PASSO 1: Encontra os 3 clusters mais proximos (zero alocacao).
 	type cdist struct {
 		idx  int
 		dist float64
@@ -132,9 +149,10 @@ func Detect(input Vector) int {
 	var count int
 	var worstDist float64 = 1e308
 
-	visited := make([]bool, len(clusters))
+	// Array fixo na stack — zero alocacao de heap.
+	var visited [256]bool
 	for i := 0; i < nearestLen; i++ {
-		scanCluster(input, nearest[i].idx, &top, &count, &worstDist)
+		scanCluster(&input32, nearest[i].idx, &top, &count, &worstDist)
 		visited[nearest[i].idx] = true
 	}
 
@@ -144,25 +162,27 @@ func Detect(input Vector) int {
 			idx int
 			lb  float64
 		}
-		cands := make([]repairCand, 0, len(clusters)-nearestLen)
+		var cands [256]repairCand
+		candCount := 0
 		for i := range clusters {
 			if visited[i] {
 				continue
 			}
 			lb := lowerBoundBoundingBox(input, clusters[i])
-			cands = append(cands, repairCand{idx: i, lb: lb})
+			cands[candCount] = repairCand{idx: i, lb: lb}
+			candCount++
 		}
 		// Ordena pelos mais promissores (menor lower_bound)
-		sort.Slice(cands, func(i, j int) bool {
+		sort.Slice(cands[:candCount], func(i, j int) bool {
 			return cands[i].lb < cands[j].lb
 		})
 		// Escaneia no maximo 20 clusters adicionais
 		limit := 20
-		if len(cands) < limit {
-			limit = len(cands)
+		if candCount < limit {
+			limit = candCount
 		}
 		for i := 0; i < limit && count < 5; i++ {
-			scanCluster(input, cands[i].idx, &top, &count, &worstDist)
+			scanCluster(&input32, cands[i].idx, &top, &count, &worstDist)
 		}
 	}
 
