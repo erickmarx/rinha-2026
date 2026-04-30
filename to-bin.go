@@ -185,10 +185,9 @@ func bin() {
 	}
 	fmt.Printf("Convertidos %d registros para formato interno\n", len(points))
 
-	// 2. Executa K-Means com k=15000 clusters.
-	// Clusters menores (~67 registros cada) reduzem a chance de misturar
-	// fraudes e legitimos no mesmo grupo, melhorando a precisao do KNN.
-	const k = 15000
+	// 2. Executa K-Means com k=50000 clusters.
+	// Clusters muito pequenos (~20 registros cada) — teste extremo de pureza.
+	const k = 50000
 	fmt.Printf("Iniciando K-Means com k=%d...\n", k)
 	start := time.Now()
 
