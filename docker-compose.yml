@@ -3,12 +3,12 @@
 # HARDWARE ALVO: 1 CPU e 350 MB de memoria TOTAIS (uso 100%).
 #
 # Divisao de CPU:
-# - 2 APIs: 0.40 CPU cada (juntas usam 0.80)
+# - 4 APIs: 0.20 CPU cada (juntas usam 0.80)
 # - LB: 0.20 CPU
 # - Total: 1.0 CPU
 #
 # Divisao de memoria:
-# - 2 APIs: 150M cada = 300M
+# - 4 APIs: 75M cada = 300M
 # - LB: 50M
 # - Total: 350M, zero sobra.
 
@@ -25,8 +25,8 @@ x-api-base: &api-base
   deploy:
     resources:
       limits:
-        cpus: "0.40"
-        memory: 150M
+        cpus: "0.20"
+        memory: 75M
   networks:
     - rinha-net
   volumes:
@@ -47,6 +47,20 @@ services:
       - GOMAXPROCS=1
       - GOMEMLIMIT=48MiB
 
+  api3:
+    <<: *api-base
+    environment:
+      - UDS_PATH=/sockets/api3.sock
+      - GOMAXPROCS=1
+      - GOMEMLIMIT=48MiB
+
+  api4:
+    <<: *api-base
+    environment:
+      - UDS_PATH=/sockets/api4.sock
+      - GOMAXPROCS=1
+      - GOMEMLIMIT=48MiB
+
   lb:
     image: sua-org/haproxy-lb:latest
     build:
@@ -58,6 +72,8 @@ services:
     depends_on:
       - api1
       - api2
+      - api3
+      - api4
     deploy:
       resources:
         limits:
