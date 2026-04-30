@@ -69,12 +69,16 @@ func findNearestClusters(input Vector, n int) []int {
 	return result
 }
 
-// Detect calcula o score de fraude usando KNN (k=5) com busca em multiplos clusters.
+// Detect calcula o score de fraude usando KNN (k=7) com busca em multiplos clusters.
 //
 // ESTRATEGIA:
 // 1. Encontra os 3 clusters mais proximos do input comparando com os centroides.
 // 2. Faz scan linear nos registros dos 3 clusters (~150 registros no total).
-// 3. Dos vizinhos encontrados em todos os clusters, pega os 5 mais proximos.
+// 3. Dos vizinhos encontrados em todos os clusters, pega os 7 mais proximos.
+//
+// Por que k=7:
+// - Mais vizinhos no voto majoritario reduz impacto de outliers/ruido.
+// - Threshold ajustado proporcionalmente (~0.57 vs 0.60 anterior).
 //
 // Por que 3 clusters:
 // - O vizinho real pode estar em um cluster adjacente, nao necessariamente
@@ -86,7 +90,8 @@ func Detect(input Vector) FraudScore {
 	nearest := findNearestClusters(input, 3)
 
 	// PASSO 2: KNN scan linear nos registros dos 3 clusters combinados.
-	var top [5]Detected
+	const knnK = 7
+	var top [knnK]Detected
 	var count int
 
 	for _, clusterIdx := range nearest {
@@ -109,12 +114,12 @@ func Detect(input Vector) FraudScore {
 				}
 			}
 
-			if pos >= 5 {
+			if pos >= knnK {
 				continue
 			}
 
 			for j := count; j > pos; j-- {
-				if j < 5 {
+				if j < knnK {
 					top[j] = top[j-1]
 				}
 			}
@@ -125,13 +130,13 @@ func Detect(input Vector) FraudScore {
 			}
 
 			top[pos] = Detected{Distance: float64(sum), Label: label}
-			if count < 5 {
+			if count < knnK {
 				count++
 			}
 		}
 	}
 
-	// PASSO 3: Classifica baseado nos 5 vizinhos mais proximos dos 3 clusters.
+	// PASSO 3: Classifica baseado nos 7 vizinhos mais proximos dos 3 clusters.
 	fraudCount := 0
 	for i := range count {
 		if top[i].Label == "fraud" {
@@ -139,9 +144,10 @@ func Detect(input Vector) FraudScore {
 		}
 	}
 
-	ratio := float32(fraudCount) / 5.0
+	ratio := float32(fraudCount) / knnK
+	// Threshold ~0.57 equivale a 4/7 frauds (mesma sensibilidade aproximada de 3/5=0.6)
 	return FraudScore{
-		Approved:   ratio < float32(0.6),
+		Approved:   ratio < float32(0.57),
 		FraudScore: ratio,
 	}
 }
