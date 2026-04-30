@@ -4,9 +4,9 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/rand"
 	"os"
-	"sort"
 	"time"
 )
 
@@ -22,102 +22,137 @@ type Point struct {
 	Label  uint32
 }
 
-// VPNode representa um no da VP-Tree serializado.
-// Deve estar alinhado com a definicao em src/vptree.go.
-type VPNode struct {
-	Index     int32
-	Threshold float32
-	Inside    int32
-	Outside   int32
+// KMeans implementa o algoritmo de Lloyd para clustering.
+// Roda OFFLINE (no to-bin.go), entao performance nao eh critica —
+// precisamos de corretude e uma boa divisao dos dados.
+type KMeans struct {
+	Points      []Point
+	Centroids   [][14]float64
+	Assignments []int
+	K           int
 }
 
-// vpNodeBuild eh a representacao em memoria durante a construcao.
-type vpNodeBuild struct {
-	index     int
-	threshold float32
-	inside    *vpNodeBuild
-	outside   *vpNodeBuild
+// NewKMeans inicializa o k-means com k clusters.
+// Os centroides iniciais sao amostrados aleatoriamente do proprio dataset.
+func NewKMeans(points []Point, k int) *KMeans {
+	km := &KMeans{
+		Points:      points,
+		Centroids:   make([][14]float64, k),
+		Assignments: make([]int, len(points)),
+		K:           k,
+	}
+
+	// Semente fixa para geracao deterministica: toda execucao gera
+	// os mesmos clusters, garantindo reprodutibilidade entre builds.
+	rand.Seed(42)
+	for i := 0; i < k; i++ {
+		idx := rand.Intn(len(points))
+		for j := 0; j < 14; j++ {
+			km.Centroids[i][j] = float64(points[idx].Vector[j])
+		}
+	}
+
+	return km
 }
 
-// distance32 calcula a distancia euclidiana ao quadrado entre dois vetores float32.
-func distance32(a, b [14]float32) float32 {
-	var sum float32
+// distanceSquared calcula a distancia euclidiana ao quadrado.
+func distanceSquared(p Point, c [14]float64) float64 {
+	var sum float64
 	for i := 0; i < 14; i++ {
-		diff := a[i] - b[i]
+		diff := float64(p.Vector[i]) - c[i]
 		sum += diff * diff
 	}
 	return sum
 }
 
-// buildVPTree constroi recursivamente a VP-Tree a partir dos indices fornecidos.
-func buildVPTree(points []Point, indices []int) *vpNodeBuild {
-	if len(indices) == 0 {
-		return nil
-	}
+// Run executa o algoritmo de Lloyd por no maximo maxIter iteracoes.
+func (km *KMeans) Run(maxIter int) {
+	for iter := 0; iter < maxIter; iter++ {
+		changed := 0
+		iterStart := time.Now()
 
-	vpPos := rand.Intn(len(indices))
-	vpIdx := indices[vpPos]
+		// PASSO 1: Atribuir cada ponto ao centroide mais proximo.
+		for i, p := range km.Points {
+			bestCluster := 0
+			bestDist := distanceSquared(p, km.Centroids[0])
 
-	if len(indices) == 1 {
-		return &vpNodeBuild{index: vpIdx}
-	}
+			for j := 1; j < km.K; j++ {
+				d := distanceSquared(p, km.Centroids[j])
+				if d < bestDist {
+					bestDist = d
+					bestCluster = j
+				}
+			}
 
-	vpVec := points[vpIdx].Vector
-	dists := make([]struct{ idx int; dist float32 }, 0, len(indices)-1)
-	for i, idx := range indices {
-		if i == vpPos {
-			continue
+			if km.Assignments[i] != bestCluster {
+				km.Assignments[i] = bestCluster
+				changed++
+			}
 		}
-		dists = append(dists, struct{ idx int; dist float32 }{
-			idx:  idx,
-			dist: distance32(vpVec, points[idx].Vector),
-		})
-	}
 
-	sort.Slice(dists, func(i, j int) bool {
-		return dists[i].dist < dists[j].dist
-	})
-
-	median := len(dists) / 2
-	threshold := dists[median].dist
-
-	inside := make([]int, 0, median)
-	outside := make([]int, 0, len(dists)-median)
-	for _, d := range dists {
-		if d.dist < threshold {
-			inside = append(inside, d.idx)
-		} else {
-			outside = append(outside, d.idx)
+		// Se nenhum ponto mudou de cluster, convergiu.
+		if changed == 0 {
+			fmt.Printf("[K-Means] Iteracao %d/%d: convergiu (%v)\n", iter+1, maxIter, time.Since(iterStart))
+			break
 		}
-	}
 
-	return &vpNodeBuild{
-		index:     vpIdx,
-		threshold: threshold,
-		inside:    buildVPTree(points, inside),
-		outside:   buildVPTree(points, outside),
+		fmt.Printf("[K-Means] Iteracao %d/%d: %d pontos mudaram de cluster (%v)\n",
+			iter+1, maxIter, changed, time.Since(iterStart))
+
+		// PASSO 2: Recalcular centroides como media dos pontos atribuidos.
+		newCentroids := make([][14]float64, km.K)
+		counts := make([]int, km.K)
+
+		for i, p := range km.Points {
+			c := km.Assignments[i]
+			counts[c]++
+			for j := 0; j < 14; j++ {
+				newCentroids[c][j] += float64(p.Vector[j])
+			}
+		}
+
+		for i := 0; i < km.K; i++ {
+			if counts[i] > 0 {
+				for j := 0; j < 14; j++ {
+					km.Centroids[i][j] = newCentroids[i][j] / float64(counts[i])
+				}
+			}
+		}
 	}
 }
 
-// flattenVPTree converte a arvore recursiva em um array flat (adequado para mmap).
-func flattenVPTree(node *vpNodeBuild, nodes *[]VPNode) int32 {
-	if node == nil {
-		return -1
+// ClusterResult contem os pontos reorganizados por cluster e os tamanhos.
+type ClusterResult struct {
+	Points []Point
+	Sizes  []int
+}
+
+// Reorganize agrupa os pontos por cluster para escrita sequencial no binario.
+func (km *KMeans) Reorganize() ClusterResult {
+	sizes := make([]int, km.K)
+	for _, c := range km.Assignments {
+		sizes[c]++
 	}
-	idx := int32(len(*nodes))
-	*nodes = append(*nodes, VPNode{
-		Index:     int32(node.index),
-		Threshold: node.threshold,
-		Inside:    -1,
-		Outside:   -1,
-	})
-	if node.inside != nil {
-		(*nodes)[idx].Inside = flattenVPTree(node.inside, nodes)
+
+	clusters := make([][]Point, km.K)
+	for i := 0; i < km.K; i++ {
+		clusters[i] = make([]Point, 0, sizes[i])
 	}
-	if node.outside != nil {
-		(*nodes)[idx].Outside = flattenVPTree(node.outside, nodes)
+
+	for i, p := range km.Points {
+		c := km.Assignments[i]
+		clusters[c] = append(clusters[c], p)
 	}
-	return idx
+
+	var allPoints []Point
+	for i := 0; i < km.K; i++ {
+		allPoints = append(allPoints, clusters[i]...)
+	}
+
+	return ClusterResult{
+		Points: allPoints,
+		Sizes:  sizes,
+	}
 }
 
 func main() {
@@ -150,25 +185,35 @@ func bin() {
 	}
 	fmt.Printf("Convertidos %d registros para formato interno\n", len(points))
 
-	// 2. Constroi a VP-Tree (offline — performance nao eh critica, corretude sim).
-	fmt.Println("[VP-Tree] Construindo indice...")
-	rand.Seed(42)
+	// 2. Executa K-Means com k=1000 clusters.
+	// Clusters grandes (~1000 registros cada) — teste de baseline.
+	const k = 1000
+	fmt.Printf("Iniciando K-Means com k=%d...\n", k)
 	start := time.Now()
 
-	indices := make([]int, len(points))
-	for i := range indices {
-		indices[i] = i
+	km := NewKMeans(points, k)
+	km.Run(20)
+
+	fmt.Println("[K-Means] Reorganizando registros por cluster...")
+	result := km.Reorganize()
+	fmt.Printf("[K-Means] Concluido em %v\n", time.Since(start))
+
+	// Estatisticas dos clusters.
+	minSize, maxSize := math.MaxInt64, 0
+	total := 0
+	for _, s := range result.Sizes {
+		if s < minSize {
+			minSize = s
+		}
+		if s > maxSize {
+			maxSize = s
+		}
+		total += s
 	}
+	fmt.Printf("Clusters: min=%d, max=%d, media=%d\n", minSize, maxSize, total/k)
 
-	root := buildVPTree(points, indices)
-
-	var nodes []VPNode
-	flattenVPTree(root, &nodes)
-
-	fmt.Printf("[VP-Tree] Construido com %d nos em %v\n", len(nodes), time.Since(start))
-
-	// 3. Escreve o arquivo binario no formato: [n][regs][node_count][nodes]
-	fmt.Println("[VP-Tree] Escrevendo dataset.bin...")
+	// 3. Escreve o arquivo binario no novo formato.
+	fmt.Println("[K-Means] Escrevendo dataset.bin...")
 	binFile, err := os.Create("dataset.bin")
 	if err != nil {
 		fmt.Println("Erro ao criar binario:", err)
@@ -176,28 +221,30 @@ func bin() {
 	}
 	defer binFile.Close()
 
-	n := uint32(len(points))
-	binary.Write(binFile, binary.LittleEndian, n)
+	// Header: k, n
+	binary.Write(binFile, binary.LittleEndian, uint32(k))
+	binary.Write(binFile, binary.LittleEndian, uint32(len(points)))
 
-	// Registros flat: 14 float32 + 1 uint32 = 60 bytes cada
-	for _, p := range points {
+	// Centroides: k x 14 floats
+	for i := 0; i < k; i++ {
+		for j := 0; j < 14; j++ {
+			binary.Write(binFile, binary.LittleEndian, float32(km.Centroids[i][j]))
+		}
+	}
+
+	// Tamanhos dos clusters: k x uint32
+	for i := 0; i < k; i++ {
+		binary.Write(binFile, binary.LittleEndian, uint32(result.Sizes[i]))
+	}
+
+	// Registros agrupados por cluster
+	for _, p := range result.Points {
 		for j := 0; j < 14; j++ {
 			binary.Write(binFile, binary.LittleEndian, p.Vector[j])
 		}
 		binary.Write(binFile, binary.LittleEndian, p.Label)
 	}
 
-	// VP-Tree: node_count + nodes (16 bytes cada)
-	nodeCount := uint32(len(nodes))
-	binary.Write(binFile, binary.LittleEndian, nodeCount)
-	for _, node := range nodes {
-		binary.Write(binFile, binary.LittleEndian, node.Index)
-		binary.Write(binFile, binary.LittleEndian, node.Threshold)
-		binary.Write(binFile, binary.LittleEndian, node.Inside)
-		binary.Write(binFile, binary.LittleEndian, node.Outside)
-	}
-
 	binFile.Sync()
-	fmt.Printf("[VP-Tree] dataset.bin gerado! (n=%d, nodes=%d, total=%d bytes)\n",
-		n, nodeCount, 4+int(n)*60+4+int(nodeCount)*16)
+	fmt.Printf("[K-Means] dataset.bin gerado com sucesso! (k=%d, n=%d)\n", k, len(points))
 }
